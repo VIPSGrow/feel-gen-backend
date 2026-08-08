@@ -1383,3 +1383,86 @@ exports.deleteProduct = async (req, res) => {
     });
   }
 };
+
+exports.deletePermanantProduct = async (req, res) => {
+  const client = await db.connect();
+  try {
+    const { id } = req.params;
+    if (!id || isNaN(parseInt(id))) {
+      return res.status(400).json({
+        success: false,
+        message: "Valid id (number) is required",
+      });
+    }
+    const productId = parseInt(id);
+
+    await client.query("BEGIN");
+
+    // Fetch the product to confirm it exists and get image/slug info for cleanup
+    const productResult = await client.query(
+      "SELECT id, slug, f_image, g_image FROM products WHERE id = $1",
+      [productId],
+    );
+    if (productResult.rowCount === 0) {
+      await client.query("ROLLBACK");
+      return res.status(404).json({
+        success: false,
+        message: "Product not found",
+      });
+    }
+    const product = productResult.rows[0];
+
+    // 1. Remove related records that have NO ON DELETE CASCADE (orphaned references)
+    await client.query("DELETE FROM e_reviews WHERE product_id = $1", [
+      productId,
+    ]);
+    await client.query("DELETE FROM e_cart_items WHERE product_id = $1", [
+      productId,
+    ]);
+
+    // 2. Delete all distributor inventory allocations for this product
+    await client.query(
+      "DELETE FROM distributor_inventory WHERE product_id = $1",
+      [productId],
+    );
+    //    Variants and variant_attr_mapping are cleaned up along with the
+    //    inventory and via ON DELETE CASCADE when the product is deleted.
+
+    // 3. Permanently delete the product row
+    const result = await client.query(
+      "DELETE FROM products WHERE id = $1 RETURNING id, name, slug",
+      [productId],
+    );
+
+    await client.query("COMMIT");
+
+    // 4. Best-effort removal of uploaded product images (non-fatal on failure)
+    if (product.slug) {
+      const uploadDir = pathModule.join("uploads", "products", product.slug);
+      try {
+        await fs.rm(uploadDir, { recursive: true, force: true });
+      } catch (fileErr) {
+        console.warn(
+          "Failed to remove product image directory (non-fatal):",
+          fileErr.message,
+        );
+      }
+    }
+
+    res.status(200).json({
+      success: true,
+      message: "Product permanently deleted successfully",
+      data: result.rows[0],
+    });
+  } catch (error) {
+    await client.query("ROLLBACK");
+    console.error("Error permanently deleting product:", error);
+    res.status(500).json({
+      success: false,
+      message: "Internal server error",
+      error: error.message,
+    });
+  } finally {
+    client.release();
+  }
+};

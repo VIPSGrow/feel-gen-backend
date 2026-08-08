@@ -15,6 +15,7 @@ const {
   getProductByslug,
   getProductsForDistributor,
   getProductsSlugs,
+  deletePermanantProduct,
 } = require("../controllers/productController");
 const authMiddleware = require("../middleware/authMiddleware");
 const {
@@ -115,5 +116,10 @@ router.put(
   updateProduct,
 );
 router.delete("/products/:id", [authMiddleware, isSuperAdmin], deleteProduct);
+router.delete(
+  "/productDelete/:id",
+  [authMiddleware, isSuperAdmin],
+  deletePermanantProduct,
+);
 
 module.exports = router;

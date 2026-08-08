@@ -1113,7 +1113,7 @@ exports.getMyOrders = async (req, res) => {
 
 exports.getAllOrders = async (req, res) => {
   try {
-    const { page = 1, limit = 20, status, filter = "all" } = req.query;
+    const { page = 1, limit = 20, status, filter = "all", search } = req.query;
 
     const offset = (parseInt(page) - 1) * parseInt(limit);
     let whereClause = "WHERE 1=1";
@@ -1137,6 +1137,25 @@ exports.getAllOrders = async (req, res) => {
         params.push(filter);
         whereClause += ` AND o.order_for = $${params.length}`;
       }
+    }
+
+    // Search across order_id, user_name, and user_phone
+    if (search) {
+      const searchTerm = `%${search}%`;
+      params.push(searchTerm);
+      const searchIdx = params.length;
+      params.push(searchTerm);
+      const searchIdx2 = params.length;
+      params.push(searchTerm);
+      const searchIdx3 = params.length;
+      whereClause += ` AND (
+        o.order_id ILIKE $${searchIdx}
+        OR u.name ILIKE $${searchIdx2}
+        OR u.phone ILIKE $${searchIdx3}
+        OR d.full_name ILIKE $${searchIdx2}
+        OR d.username ILIKE $${searchIdx2}
+        OR d.phone ILIKE $${searchIdx3}
+      )`;
     }
 
     // console.log("filter - ", filter, whereClause);
@@ -1193,7 +1212,10 @@ exports.getAllOrders = async (req, res) => {
     ]);
 
     const totalRes = await db.query(
-      `SELECT COUNT(*)::int FROM orders o ${whereClause}`,
+      `SELECT COUNT(*)::int FROM orders o 
+       LEFT JOIN ecom_user u ON o.user_id = u.id
+       LEFT JOIN users d ON o.distributor_id = d.id 
+       ${whereClause}`,
       params,
     );
 

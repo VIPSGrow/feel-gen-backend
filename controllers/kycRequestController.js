@@ -6,6 +6,7 @@ exports.getKycRequests = async (req, res) => {
 
     const page = parseInt(req.query.page) || 1;
     const limit = parseInt(req.query.limit) || 10;
+    const search = req.query.search || "";
     const offset = (page - 1) * limit;
     // WHERE kr.status IN ('pending', 'under_review')
     const requests = await db.query(
@@ -18,6 +19,7 @@ exports.getKycRequests = async (req, res) => {
       FROM kyc_requests kr
       JOIN users u ON kr.user_id = u.id
       LEFT JOIN kyc_documents kd ON kr.user_id = kd.user_id
+      WHERE (u.full_name ILIKE '%' || $3 || '%' OR u.phone ILIKE '%' || $3 || '%')
       
       GROUP BY kr.id, u.id
       ORDER BY 
@@ -32,14 +34,18 @@ exports.getKycRequests = async (req, res) => {
       kr.created_at DESC
       LIMIT $1 OFFSET $2
     `,
-      [limit, offset],
+      [limit, offset, search],
     );
 
-    const total = await db.query(`
+    const total = await db.query(
+      `
       SELECT COUNT(*) 
-      FROM kyc_requests kr 
-      WHERE kr.status IN ('pending', 'under_review')
-    `);
+      FROM kyc_requests kr
+      JOIN users u ON kr.user_id = u.id
+      WHERE (u.full_name ILIKE '%' || $1 || '%' OR u.phone ILIKE '%' || $1 || '%')
+    `,
+      [search],
+    );
 
     // Get documents for each request
     const requestIds = requests.rows.map((r) => r.id);

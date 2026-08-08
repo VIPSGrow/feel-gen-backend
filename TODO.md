@@ -1,6 +1,9 @@
-# TODO
+# TODO: Integrate search in exports.getPlacedOrder
 
-- [x] Refactor services/commission/LevelCommission.js execution flow to update wallet counters only after validations + inserts succeed.
-- [ ] Ensure no business/commission/milestone/pair/transaction logic is changed; only reorder execution for transaction safety.
-- [ ] Add comments explaining changed sections; keep all existing console logs.
-- [ ] Run a quick lint/test or node syntax check if available.
+## Steps
+
+- [x] Read and understand `controllers/distributor_OrderController.js` and `routes/orderRoutes.js`
+- [x] Confirm plan with user
+- [x] Add search (order_id / user_name) logic to `getPlacedOrder`
+- [x] Update count query to include JOINs (ecom_user, users) so count works with user_name search
+- [ ] Test endpoint

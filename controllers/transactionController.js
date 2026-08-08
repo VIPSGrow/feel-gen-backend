@@ -691,7 +691,7 @@ exports.listAllTransactionsForSuperAdmin = async (req, res) => {
             0
           )::numeric(15,2) AS amount
       FROM transactions t
-      LEFT JOIN users u ON u.id = t.user_id
+      LEFT JOIN users u ON u.id = t.user_id::int
       CROSS JOIN app_settings s
       WHERE s.setting_key = 'point_system'
         ${whereSql ? whereSql.replace("WHERE ", "AND ") : ""}

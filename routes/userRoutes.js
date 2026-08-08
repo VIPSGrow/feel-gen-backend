@@ -23,6 +23,13 @@ router.get("/tree-by-id/:id", [auth], userController.getMyTreeById);
 router.post("/create", userController.createUser);
 router.get("/profile-by-referral", userController.getProfile);
 router.put("/me/profile", auth, userController.updateMyProfile);
+// Update user account/bank + nominee details
+router.put("/account", auth, userController.updateUserAccount);
+router.put(
+  "/account/:userId",
+  [auth, isSuperAdmin],
+  userController.updateUserAccount,
+);
 
 // Transaction PIN & Password
 router.post("/set-pin", auth, userController.setTransactionPin);
@@ -30,7 +37,7 @@ router.post("/change-password", auth, userController.changePassword);
 router.post("/send-otp", userController.sendOtp);
 router.post("/verify-otp", userController.verifyOtp);
 router.post("/reset-password", userController.resetPassword);
-
+router.get("/checkGST/:gst_no", userController.checkGST);
 // KYC routes
 router.get("/kyc-status", kycMiddleware, userController.getKycStatus);
 
@@ -47,6 +54,17 @@ router.post(
   userController.uploadKycDocuments,
 );
 router.post("/kyc/submit", kycMiddleware, userController.submitKycRequest);
+
+const profilePicUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 5 * 1024 * 1024 },
+});
+
+router.post(
+  "/profile-pic",
+  [auth, profilePicUpload.single("profile")],
+  userController.uploadProfilePicture,
+);
 
 router.post(
   "/admin/kyc/:userId",

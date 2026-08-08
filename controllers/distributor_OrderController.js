@@ -412,7 +412,7 @@ exports.getAllD_Orders = async (req, res) => {
 // placed
 exports.getPlacedOrder = async (req, res) => {
   try {
-    const { page = 1, limit = 20, status, filter = "all" } = req.query;
+    const { page = 1, limit = 20, status, filter = "all", search } = req.query;
 
     const dis_id = req.user.id;
 
@@ -440,6 +440,14 @@ exports.getPlacedOrder = async (req, res) => {
         // whereClause += ` AND o.order_for = $${params.length}`;
         whereClause += `o.distributor_id = ${dis_id} AND (o.order_for NOT LIKE 'distributor_%' OR o.order_for IS NULL)`;
       }
+    }
+
+    if (search) {
+      params.push(`%${search}%`);
+      whereClause += ` AND (
+        o.order_id ILIKE $${params.length} OR
+        COALESCE(u.name, d.full_name, d.username) ILIKE $${params.length}
+      )`;
     }
 
     const ordersQuery = `
@@ -481,7 +489,11 @@ exports.getPlacedOrder = async (req, res) => {
     ]);
 
     const totalRes = await db.query(
-      `SELECT COUNT(*)::int FROM orders o ${whereClause}`,
+      `SELECT COUNT(*)::int 
+       FROM orders o 
+       LEFT JOIN ecom_user u ON o.user_id = u.id
+       LEFT JOIN users d ON o.distributor_id = d.id 
+       ${whereClause}`,
       params,
     );
 

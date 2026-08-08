@@ -147,6 +147,17 @@ exports.getMyTree = async (req, res) => {
       `SELECT 
         u.id, u.username, u.email, u.phone, u.full_name, u.node_path, 
         u.referrer_id, u.referral_code, u.created_at, u.is_active, u.kyc_status,
+        -- Total number of descendants under this user (team size)
+        (
+          SELECT COUNT(*) 
+          FROM users sub 
+          WHERE sub.node_path <@ u.node_path AND sub.id != u.id
+        )::int as team_size,
+        -- Match the highest level from level_commissions whose team_size threshold
+        -- is less than or equal to this user's team size
+        lc.level_no,
+        lc.level_name,
+        lc.commission_percentage,
         -- Create a JSON object for referrer if it exists
         CASE 
           WHEN p.id IS NOT NULL THEN 
@@ -160,6 +171,17 @@ exports.getMyTree = async (req, res) => {
         END as referrer
        FROM users u
        LEFT JOIN users p ON u.referrer_id = p.id
+       LEFT JOIN LATERAL (
+         SELECT lc.level_no, lc.level_name, lc.commission_percentage
+         FROM level_commissions lc
+         WHERE lc.team_size <= (
+           SELECT COUNT(*) 
+           FROM users sub 
+           WHERE sub.node_path <@ u.node_path AND sub.id != u.id
+         )
+         ORDER BY lc.level_no DESC
+         LIMIT 1
+       ) lc ON true
        WHERE u.node_path <@ (SELECT node_path FROM users WHERE id = $1)::ltree`,
       [userId],
     );
@@ -208,6 +230,17 @@ exports.getMyTreeById = async (req, res) => {
       `SELECT 
         u.id, u.username, u.email, u.phone, u.full_name, u.node_path, 
         u.referrer_id, u.referral_code, u.created_at, u.is_active, u.kyc_status,
+        -- Total number of descendants under this user (team size)
+        (
+          SELECT COUNT(*) 
+          FROM users sub 
+          WHERE sub.node_path <@ u.node_path AND sub.id != u.id
+        )::int as team_size,
+        -- Match the highest level from level_commissions whose team_size threshold
+        -- is less than or equal to this user's team size
+        lc.level_no,
+        lc.level_name,
+        lc.commission_percentage,
         -- Create a JSON object for referrer if it exists
         CASE 
           WHEN p.id IS NOT NULL THEN 
@@ -221,6 +254,17 @@ exports.getMyTreeById = async (req, res) => {
         END as referrer
        FROM users u
        LEFT JOIN users p ON u.referrer_id = p.id
+       LEFT JOIN LATERAL (
+         SELECT lc.level_no, lc.level_name, lc.commission_percentage
+         FROM level_commissions lc
+         WHERE lc.team_size <= (
+           SELECT COUNT(*) 
+           FROM users sub 
+           WHERE sub.node_path <@ u.node_path AND sub.id != u.id
+         )
+         ORDER BY lc.level_no DESC
+         LIMIT 1
+       ) lc ON true
        WHERE u.node_path <@ (SELECT node_path FROM users WHERE id = $1)::ltree`,
       [userId],
     );
@@ -289,7 +333,7 @@ exports.getProfile = async (req, res) => {
     const taken = children.rows.map((r) => r.position);
 
     // 🔥 AUTO LEFT → RIGHT → REJECT
-    let = position = 0;
+    let position = 0;
     if (!taken.includes(1)) {
       position = 1;
     } else if (!taken.includes(2)) {
@@ -454,6 +498,97 @@ exports.updateMyProfile = async (req, res) => {
     if (err.code === "23505") {
       return res.status(400).json({ status: false, error: "Duplicate value" });
     }
+    console.error(err);
+    return res.status(500).json({ status: false, error: "Server error" });
+  }
+};
+
+exports.updateUserAccount = async (req, res) => {
+  try {
+    // Support both self-update and admin-update-by-id
+    const userId = req.params.userId || req.user?.id;
+    if (!userId) {
+      return res.status(401).json({ status: false, error: "Unauthorized" });
+    }
+
+    const body = req.body || {};
+
+    // Whitelist fields that can be updated (bank + nominee + aadhaar/pan)
+    const allowedFields = [
+      "aadhaar_no",
+      "pan_no",
+      "bank_name",
+      "account_holder_name",
+      "account_no",
+      "ifsc_code",
+      "branch",
+      "nominee_name",
+      "nominee_relationship",
+      "nominee_age",
+      "nominee_contact",
+      "nominee_aadhaar",
+    ];
+
+    // Client might send camelCase too
+    const camelMap = {
+      aadhaarNo: "aadhaar_no",
+      panNo: "pan_no",
+      bankName: "bank_name",
+      accountHolderName: "account_holder_name",
+      accountNo: "account_no",
+      ifscCode: "ifsc_code",
+      nomineeName: "nominee_name",
+      nomineeRelationship: "nominee_relationship",
+      nomineeAge: "nominee_age",
+      nomineeContact: "nominee_contact",
+      nomineeAadhaar: "nominee_aadhaar",
+    };
+
+    for (const [k, v] of Object.entries(camelMap)) {
+      if (body[k] !== undefined && body[v] === undefined) {
+        body[v] = body[k];
+      }
+    }
+
+    const updates = [];
+    const values = [];
+    let idx = 1;
+
+    for (const field of allowedFields) {
+      if (body[field] !== undefined) {
+        updates.push(`${field} = $${idx++}`);
+        values.push(body[field]);
+      }
+    }
+
+    if (updates.length === 0) {
+      return res
+        .status(400)
+        .json({ status: false, error: "No valid fields to update" });
+    }
+
+    values.push(userId);
+
+    const query = `
+      UPDATE users
+      SET ${updates.join(", ")}
+      WHERE id = $${idx}
+      RETURNING id, aadhaar_no, pan_no, bank_name, account_holder_name,
+        account_no, ifsc_code, branch, nominee_name, nominee_relationship,
+        nominee_age, nominee_contact, nominee_aadhaar
+    `;
+
+    const result = await db.query(query, values);
+    if (result.rows.length === 0) {
+      return res.status(404).json({ status: false, error: "User not found" });
+    }
+
+    return res.json({
+      status: true,
+      message: "User account updated successfully",
+      user: result.rows[0],
+    });
+  } catch (err) {
     console.error(err);
     return res.status(500).json({ status: false, error: "Server error" });
   }
@@ -1224,5 +1359,102 @@ exports.resetPassword = async (req, res) => {
     await db.query("ROLLBACK"); // Cancel database changes if something fails
     console.error("Reset Password Error:", error);
     res.status(500).json({ success: false, error: "Internal server error" });
+  }
+};
+
+exports.uploadProfilePicture = async (req, res) => {
+  try {
+    const userId = req.user?.id;
+    if (!userId) {
+      return res.status(401).json({ status: false, error: "Unauthorized" });
+    }
+
+    // Expect the file under the field name "profile" (multipart/form-data)
+    const file = req.file;
+
+    if (!file) {
+      return res.status(400).json({
+        status: false,
+        error: "Profile image is required (form-data field name: profile)",
+      });
+    }
+
+    // Ensure the destination folder exists
+    const uploadDir = pathModule.join("uploads", "profile_pics");
+    await fs.mkdir(uploadDir, { recursive: true });
+
+    // Build a safe file name (keep original extension if present)
+    const ext = pathModule.extname(file.originalname) || ".jpg";
+    const safeFileName = `${userId}_${Date.now()}${ext}`;
+    const filePath = pathModule.join(uploadDir, safeFileName);
+
+    // Save the buffer to disk
+    await fs.writeFile(filePath, file.buffer);
+
+    const publicUrl = `${process.env.APP_URL}/uploads/profile_pics/${safeFileName}`;
+
+    // Persist the URL in the kyc_documents table (document_type = 'profile')
+    await db.query(
+      `UPDATE kyc_documents
+       SET file_url = $1, status = 'pending', updated_at = CURRENT_TIMESTAMP
+       WHERE user_id = $2 AND document_type = 'profile'`,
+      [publicUrl, userId],
+    );
+
+    res.json({
+      status: true,
+      message: "Profile picture updated successfully",
+      profile_pic: publicUrl,
+    });
+  } catch (err) {
+    console.error(err);
+    res
+      .status(500)
+      .json({ status: false, error: "Server error uploading profile picture" });
+  }
+};
+
+exports.checkGST = async (req, res) => {
+  try {
+    const { gst_no } = req.params;
+
+    if (!gst_no) {
+      return res
+        .status(400)
+        .json({ status: false, message: "GST number is required" });
+    }
+
+    // Normalize: trim spaces and convert to uppercase for a consistent comparison
+    const normalizedGst = gst_no.trim().toUpperCase();
+
+    if (normalizedGst.length < 15) {
+      return res
+        .status(400)
+        .json({ status: false, message: "Invalid GST number format" });
+    }
+
+    // Check if the GST number already exists in the users table
+    const exists = await db.query(
+      "SELECT id FROM users WHERE UPPER(TRIM(gstin)) = $1",
+      [normalizedGst],
+    );
+
+    if (exists.rows.length > 0) {
+      return res.status(200).json({
+        status: false,
+        exists: true,
+        message:
+          "GST number already in use. Duplicate GST numbers are not allowed.",
+      });
+    }
+
+    return res.status(200).json({
+      status: true,
+      exists: false,
+      message: "GST number is available",
+    });
+  } catch (err) {
+    console.error("Error checking GST - ", err);
+    res.status(500).json({ status: false, message: "Server error" });
   }
 };
