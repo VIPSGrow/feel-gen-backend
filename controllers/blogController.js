@@ -10,10 +10,10 @@ const ALLOWED_IMAGE_TYPES = [
   "image/webp",
   "image/gif",
 ];
-const MAX_FILE_SIZE = 5 * 1024 * 1024; // 5MB
+const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB
 
 async function saveBlogFile(file) {
-  const uploadDir = "uploads/blog";
+  const uploadDir = path.join("uploads", "blog");
   await fs.mkdir(uploadDir, { recursive: true });
 
   const fileName = `${Date.now()}_${file.originalname.replace(/\s+/g, "_")}`;
@@ -21,7 +21,11 @@ async function saveBlogFile(file) {
 
   await fs.writeFile(filePath, file.buffer);
 
-  return `${process.env.APP_URL}/${uploadDir}/${fileName}`;
+  // Fallback if APP_URL is not set in .env
+  const baseUrl = process.env.APP_URL
+    ? process.env.APP_URL.replace(/\/$/, "")
+    : "";
+  return `${baseUrl}/uploads/blog/${fileName}`;
 }
 
 function validateBlogFile(file, fieldName) {
@@ -29,21 +33,16 @@ function validateBlogFile(file, fieldName) {
     return `Invalid file type for ${fieldName}: ${file.mimetype}. Allowed types: jpeg, jpg, png, webp, gif`;
   }
   if (file.size > MAX_FILE_SIZE) {
-    return `File too large for ${fieldName} (max 5MB)`;
+    return `File too large for ${fieldName} (max 10MB)`;
   }
   return null;
 }
 
 const blogController = {
   // ==================== CATEGORY METHODS ====================
-
-  // Fetch all categories
   getAllCategories: async (req, res) => {
     try {
-      const query = `
-        SELECT * FROM blog_categories 
-        ORDER BY name ASC;
-      `;
+      const query = `SELECT * FROM blog_categories ORDER BY name ASC;`;
       const { rows } = await pool.query(query);
       res.status(200).json({ success: true, data: rows });
     } catch (error) {
@@ -51,7 +50,6 @@ const blogController = {
     }
   },
 
-  // Fetch single category by ID
   getCategoryById: async (req, res) => {
     const { id } = req.params;
     try {
@@ -70,9 +68,13 @@ const blogController = {
     }
   },
 
-  // Create Category (Admin)
   createCategory: async (req, res) => {
     const { name } = req.body;
+    if (!name || typeof name !== "string") {
+      return res
+        .status(400)
+        .json({ success: false, message: "Category name is required" });
+    }
     const slug = slugify(name, { lower: true, strict: true });
 
     try {
@@ -84,7 +86,6 @@ const blogController = {
       res.status(201).json({ success: true, data: rows[0] });
     } catch (error) {
       if (error.code === "23505") {
-        // Unique violation
         return res
           .status(400)
           .json({ success: false, message: "Category already exists" });
@@ -93,7 +94,6 @@ const blogController = {
     }
   },
 
-  // Update Category (Admin)
   updateCategory: async (req, res) => {
     const { id } = req.params;
     const { name } = req.body;
@@ -124,7 +124,6 @@ const blogController = {
     }
   },
 
-  // Delete Category (Admin)
   deleteCategory: async (req, res) => {
     const { id } = req.params;
     try {
@@ -146,20 +145,17 @@ const blogController = {
   },
 
   // ==================== POST METHODS ====================
-
-  // Fetch all public blogs
   getAllPosts: async (req, res) => {
     try {
       const query = `
-                SELECT bp.*, bc.name as category_name 
-                FROM blog_posts bp
-                LEFT JOIN blog_categories bc ON bp.category_id = bc.id
-                WHERE bp.status = 'published'
-                ORDER BY bp.created_at DESC;
-            `;
+        SELECT bp.*, bc.name as category_name 
+        FROM blog_posts bp
+        LEFT JOIN blog_categories bc ON bp.category_id = bc.id
+        WHERE bp.status = 'published'
+        ORDER BY bp.created_at DESC;
+      `;
       const { rows: posts } = await pool.query(query);
 
-      // Fetch approved comments for each post
       for (const post of posts) {
         const commentQuery = `
           SELECT user_full_name, comment_text, created_at 
@@ -177,17 +173,15 @@ const blogController = {
     }
   },
 
-  // Fetch single blog + Latest 6 Products + Approved Comments
   getPostBySlug: async (req, res) => {
     const { slug } = req.params;
     try {
-      // 1. Get Blog Detail
-      // const blogQuery = `SELECT * FROM blog_posts LEFT JOIN WHERE slug = $1 AND status = 'published'`;
-      const blogQuery = `SELECT bp.*, bc.name as category_name 
-                FROM blog_posts bp
-                LEFT JOIN blog_categories bc ON bp.category_id = bc.id 
-                WHERE bp.slug = $1 AND bp.status = 'published'
-                `;
+      const blogQuery = `
+        SELECT bp.*, bc.name as category_name 
+        FROM blog_posts bp
+        LEFT JOIN blog_categories bc ON bp.category_id = bc.id 
+        WHERE bp.slug = $1 AND bp.status = 'published';
+      `;
       const blogResult = await pool.query(blogQuery, [slug]);
 
       if (blogResult.rows.length === 0) {
@@ -197,23 +191,21 @@ const blogController = {
       }
       const post = blogResult.rows[0];
 
-      // 2. Get Latest 6 Products (Dynamic - No hard linking needed)
       const productQuery = `
-                SELECT id, name,  f_image, slug 
-                FROM products 
-                WHERE status = 'active' 
-                ORDER BY created_at DESC 
-                LIMIT 6;
-            `;
+        SELECT id, name, f_image, slug 
+        FROM products 
+        WHERE status = 'active' 
+        ORDER BY created_at DESC 
+        LIMIT 6;
+      `;
       const products = await pool.query(productQuery);
 
-      // 3. Get Approved Comments
       const commentQuery = `
-                SELECT user_full_name, comment_text, created_at 
-                FROM blog_comments 
-                WHERE post_id = $1 AND is_approved = true 
-                ORDER BY created_at DESC;
-            `;
+        SELECT user_full_name, comment_text, created_at 
+        FROM blog_comments 
+        WHERE post_id = $1 AND is_approved = true 
+        ORDER BY created_at DESC;
+      `;
       const comments = await pool.query(commentQuery, [post.id]);
 
       res.status(200).json({
@@ -232,8 +224,7 @@ const blogController = {
   getPostDetails: async (req, res) => {
     const { slug } = req.params;
     try {
-      // 1. Get Blog Detail
-      const blogQuery = `SELECT * FROM blog_posts WHERE slug = $1 AND status = 'published'`;
+      const blogQuery = `SELECT * FROM blog_posts WHERE slug = $1`;
       const blogResult = await pool.query(blogQuery, [slug]);
 
       if (blogResult.rows.length === 0) {
@@ -243,39 +234,34 @@ const blogController = {
       }
       const post = blogResult.rows[0];
 
-      // 2. Get Latest 6 Products (Dynamic - No hard linking needed)
-
-      // 3. Get Approved Comments
       const commentQuery = `
-                SELECT user_full_name, comment_text, created_at 
-                FROM blog_comments 
-                WHERE post_id = $1 AND is_approved = true 
-                ORDER BY created_at DESC;
-            `;
+        SELECT user_full_name, comment_text, created_at 
+        FROM blog_comments 
+        WHERE post_id = $1 AND is_approved = true 
+        ORDER BY created_at DESC;
+      `;
       const comments = await pool.query(commentQuery, [post.id]);
 
       res.status(200).json({
         success: true,
-        // data: {
-        //   post,
-        //   comments: comments.rows,
-        // },
-        data: post,
+        data: {
+          ...post,
+          comments: comments.rows,
+        },
       });
     } catch (error) {
       res.status(500).json({ success: false, message: error.message });
     }
   },
 
-  // Add a comment (Public)
   addComment: async (req, res) => {
     const { post_id, user_full_name, user_phone, user_email, comment_text } =
       req.body;
     try {
       const query = `
-                INSERT INTO blog_comments (post_id, user_full_name, user_phone, user_email, comment_text)
-                VALUES ($1, $2, $3, $4, $5) RETURNING id;
-            `;
+        INSERT INTO blog_comments (post_id, user_full_name, user_phone, user_email, comment_text)
+        VALUES ($1, $2, $3, $4, $5) RETURNING id;
+      `;
       await pool.query(query, [
         post_id,
         user_full_name,
@@ -294,45 +280,42 @@ const blogController = {
 
   // Create Post (Admin)
   createPost: async (req, res) => {
-    const { title, content, category_id, featured_image } = req.body;
-    const slug = slugify(title, { lower: true, strict: true });
+    try {
+      const {
+        title,
+        content,
+        category_id,
+        featured_image,
+        is_published,
+        status,
+      } = req.body;
 
-    // Handle image file upload from req.files or req.file
-    let imageUrl = featured_image || null;
-
-    // Try req.file first (from upload.single)
-    if (req.file && req.file.fieldname === "featured_image") {
-      const validationError = validateBlogFile(req.file, "featured_image");
-      if (validationError) {
+      if (!title || typeof title !== "string" || !title.trim()) {
         return res.status(400).json({
           success: false,
-          message: validationError,
+          message: "Title is required and must be a non-empty string.",
         });
       }
-      imageUrl = await saveBlogFile(req.file);
-    }
-    // Try req.files array (from upload.array)
-    else if (req.files && req.files.length > 0) {
-      const imageFile = req.files.find((f) => f.fieldname === "featured_image");
-      if (imageFile) {
-        const validationError = validateBlogFile(imageFile, "featured_image");
-        if (validationError) {
-          return res.status(400).json({
-            success: false,
-            message: validationError,
-          });
-        }
-        imageUrl = await saveBlogFile(imageFile);
-      }
-    }
 
-    // Fallback to base64 if no file uploaded
-    if (
-      !imageUrl &&
-      featured_image &&
-      featured_image.startsWith("data:image")
-    ) {
-      try {
+      const slug = slugify(title.trim(), { lower: true, strict: true });
+      let imageUrl = null;
+
+      // 1. Process uploaded file via Multer
+      if (req.file) {
+        const validationError = validateBlogFile(req.file, "featured_image");
+        if (validationError) {
+          return res
+            .status(400)
+            .json({ success: false, message: validationError });
+        }
+        imageUrl = await saveBlogFile(req.file);
+      }
+      // 2. Process base64 string fallback
+      else if (
+        featured_image &&
+        typeof featured_image === "string" &&
+        featured_image.startsWith("data:image")
+      ) {
         const uploadDir = path.join("uploads", "blog");
         await fs.mkdir(uploadDir, { recursive: true });
 
@@ -341,82 +324,82 @@ const blogController = {
           "",
         );
         const buffer = Buffer.from(base64Data, "base64");
+        const extMatch = featured_image.match(/^data:image\/(\w+);base64,/);
+        const ext = extMatch ? extMatch[1] : "jpg";
 
-        const ext =
-          featured_image.match(/^data:image\/(\w+);base64,/)[1] || "jpg";
         const fileName = `${Date.now()}_${slug}.${ext}`;
         const filePath = path.join(uploadDir, fileName);
 
         await fs.writeFile(filePath, buffer);
-        imageUrl = `${process.env.APP_URL}/uploads/blog/${fileName}`;
-      } catch (uploadError) {
-        console.error("Image upload error:", uploadError);
-        return res
-          .status(500)
-          .json({ success: false, message: "Failed to upload image" });
+        const baseUrl = process.env.APP_URL
+          ? process.env.APP_URL.replace(/\/$/, "")
+          : "";
+        imageUrl = `${baseUrl}/uploads/blog/${fileName}`;
+      } else if (typeof featured_image === "string") {
+        imageUrl = featured_image;
       }
-    }
 
-    try {
+      // Map is_published boolean/string to status column
+      const postStatus =
+        status ||
+        (is_published === true || is_published === "true"
+          ? "published"
+          : "draft");
+
       const query = `
-                INSERT INTO blog_posts (title, slug, content, category_id, featured_image)
-                VALUES ($1, $2, $3, $4, $5) RETURNING *;
-            `;
+        INSERT INTO blog_posts (title, slug, content, category_id, featured_image,  status)
+        VALUES ($1, $2, $3, $4, $5, $6) RETURNING *;
+      `;
       const { rows } = await pool.query(query, [
         title,
         slug,
         content,
-        category_id,
+        category_id || null,
         imageUrl,
+        postStatus,
       ]);
+
       res.status(201).json({ success: true, data: rows[0] });
     } catch (error) {
+      console.error("createPost error:", error);
       res.status(500).json({ success: false, message: error.message });
     }
   },
 
   // Update Post (Admin)
   updatePost: async (req, res) => {
-    const { id } = req.params;
-    const { title, content, category_id, featured_image, status } = req.body;
-    const slug = title ? slugify(title, { lower: true, strict: true }) : null;
+    try {
+      const { id } = req.params;
+      const {
+        title,
+        content,
+        category_id,
+        featured_image,
 
-    // Handle image file upload from req.files or req.file
-    let imageUrl = featured_image || null;
+        is_published,
+        status,
+      } = req.body;
 
-    // Try req.file first (from upload.single)
-    if (req.file && req.file.fieldname === "featured_image") {
-      const validationError = validateBlogFile(req.file, "featured_image");
-      if (validationError) {
-        return res.status(400).json({
-          success: false,
-          message: validationError,
-        });
-      }
-      imageUrl = await saveBlogFile(req.file);
-    }
-    // Try req.files array (from upload.array)
-    else if (req.files && req.files.length > 0) {
-      const imageFile = req.files.find((f) => f.fieldname === "featured_image");
-      if (imageFile) {
-        const validationError = validateBlogFile(imageFile, "featured_image");
+      const slug =
+        title && typeof title === "string" && title.trim()
+          ? slugify(title.trim(), { lower: true, strict: true })
+          : null;
+
+      let imageUrl = null;
+
+      if (req.file) {
+        const validationError = validateBlogFile(req.file, "featured_image");
         if (validationError) {
-          return res.status(400).json({
-            success: false,
-            message: validationError,
-          });
+          return res
+            .status(400)
+            .json({ success: false, message: validationError });
         }
-        imageUrl = await saveBlogFile(imageFile);
-      }
-    }
-
-    // Fallback to base64 if no file uploaded
-    if (
-      !imageUrl &&
-      featured_image &&
-      featured_image.startsWith("data:image")
-    ) {
-      try {
+        imageUrl = await saveBlogFile(req.file);
+      } else if (
+        featured_image &&
+        typeof featured_image === "string" &&
+        featured_image.startsWith("data:image")
+      ) {
         const uploadDir = path.join("uploads", "blog");
         await fs.mkdir(uploadDir, { recursive: true });
 
@@ -425,43 +408,64 @@ const blogController = {
           "",
         );
         const buffer = Buffer.from(base64Data, "base64");
+        const extMatch = featured_image.match(/^data:image\/(\w+);base64,/);
+        const ext = extMatch ? extMatch[1] : "jpg";
 
-        const ext =
-          featured_image.match(/^data:image\/(\w+);base64,/)[1] || "jpg";
         const fileName = `${Date.now()}_${slug || "update"}.${ext}`;
         const filePath = path.join(uploadDir, fileName);
 
         await fs.writeFile(filePath, buffer);
-        imageUrl = `${process.env.APP_URL}/uploads/blog/${fileName}`;
-      } catch (uploadError) {
-        console.error("Image upload error:", uploadError);
-        return res
-          .status(500)
-          .json({ success: false, message: "Failed to upload image" });
+        const baseUrl = process.env.APP_URL
+          ? process.env.APP_URL.replace(/\/$/, "")
+          : "";
+        imageUrl = `${baseUrl}/uploads/blog/${fileName}`;
+      } else if (typeof featured_image === "string") {
+        imageUrl = featured_image;
       }
-    }
 
-    try {
+      const postStatus =
+        status ||
+        (is_published !== undefined
+          ? is_published === true || is_published === "true"
+            ? "published"
+            : "draft"
+          : null);
+
       const query = `
-                UPDATE blog_posts 
-                SET title = COALESCE($1, title), content = COALESCE($2, content), category_id = COALESCE($3, category_id), featured_image = COALESCE($4, featured_image), status = COALESCE($5, status), updated_at = NOW()
-                WHERE id = $6 RETURNING *;
-            `;
+        UPDATE blog_posts 
+        SET title = COALESCE($1, title), 
+            slug = COALESCE($2, slug), 
+            content = COALESCE($3, content), 
+            category_id = COALESCE($4, category_id), 
+            featured_image = COALESCE($5, featured_image),             
+            status = COALESCE($7, status), 
+            updated_at = NOW()
+        WHERE id = $8 RETURNING *;
+      `;
       const { rows } = await pool.query(query, [
-        title,
-        content,
-        category_id,
+        title || null,
+        slug,
+        content || null,
+        category_id || null,
         imageUrl,
-        status,
+
+        postStatus,
         id,
       ]);
+
+      if (rows.length === 0) {
+        return res
+          .status(404)
+          .json({ success: false, message: "Post not found" });
+      }
+
       res.status(200).json({ success: true, data: rows[0] });
     } catch (error) {
+      console.error("updatePost error:", error);
       res.status(500).json({ success: false, message: error.message });
     }
   },
 
-  // Delete Post (Admin)
   deletePost: async (req, res) => {
     const { id } = req.params;
     try {
@@ -475,7 +479,6 @@ const blogController = {
     }
   },
 
-  // Approve Comment (Admin)
   approveComment: async (req, res) => {
     const { commentId } = req.params;
     try {

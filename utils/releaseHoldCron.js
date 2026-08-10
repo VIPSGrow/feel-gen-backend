@@ -1,6 +1,7 @@
 const cron = require("node-cron");
 const db = require("../config/db");
 const LevelCommissionDistribution = require("../services/commission/LevelCommission");
+const InitiatorCommission = require("../services/commission/InitiatorCommission");
 
 // Daily cron to release 30-day hold commissions to total_balance
 async function releaseHeldCommissions() {
@@ -95,6 +96,11 @@ async function releaseHeldCommissions() {
               "BIMA Booking Commission",
             ],
           );
+
+          // update initiator_user_id comission
+          await InitiatorCommission(client, tran.user_id, {
+            amount: sub_total,
+          });
 
           // 5. Distribute Level Commission (Passing fetched order details)
           await LevelCommissionDistribution(client, tran.user_id, {

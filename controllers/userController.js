@@ -719,6 +719,7 @@ exports.createUser = async (req, res) => {
       password,
       referrer_id,
       gstin: gst_no,
+      initiator_user_id,
     } = req.body;
 
     if (!password) {
@@ -840,7 +841,7 @@ exports.createUser = async (req, res) => {
         nominee_name, nominee_relationship, nominee_age, nominee_contact, nominee_aadhaar,
         business_level, agreed_to_terms, kyc_status,
         username, password_hash, referrer_id,
-        node_path, binary_path, position, is_active, gstin
+        node_path, binary_path, position, is_active, gstin, profile_pic
       ) VALUES (
       $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,
       $13,$14,$15,$16,$17,
@@ -848,7 +849,7 @@ exports.createUser = async (req, res) => {
       $21,$22,$23,$24,$25,
       $26,$27,$28,
       $29,$30,$31,
-      $32,$33,$34, $35, $36
+      $32,$33,$34, $35, $36, $37
       ) RETURNING *`,
       [
         full_name || null,
@@ -887,6 +888,7 @@ exports.createUser = async (req, res) => {
         position,
         false,
         gst_no || "",
+        initiator_user_id || null,
       ],
     );
 
