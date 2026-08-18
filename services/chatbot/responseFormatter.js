@@ -352,6 +352,19 @@ function formatAssistantResponse({ context, intent, data, forbidden }) {
           }, ${sample?.city || "-"}.`;
     }
 
+    if (intent.toolName === "getMyTickets") {
+      const rows = Array.isArray(data) ? data : [];
+      if (rows.length === 0) {
+        return lang === "hi"
+          ? "आपके कोई सपोर्ट टिकट नहीं हैं।"
+          : "You have no support tickets.";
+      }
+      const latestTicket = rows[0];
+      return lang === "hi"
+        ? `आपके पास ${rows.length} टिकट हैं। सबसे नया टिकट है: '${latestTicket.subject}' (Status: ${latestTicket.status})`
+        : `You have ${rows.length} ticket(s). The latest is: '${latestTicket.subject}' (Status: ${latestTicket.status})`;
+    }
+
     if (intent.toolName === "getMyWishlist") {
       const rows = Array.isArray(data) ? data : [];
       if (rows.length === 0)
@@ -410,6 +423,19 @@ function formatAssistantResponse({ context, intent, data, forbidden }) {
         : "";
 
       return `${header}${line}`;
+    }
+
+    if (intent.toolName === "getMyTickets") {
+      const rows = Array.isArray(data) ? data : [];
+      if (rows.length === 0) {
+        return lang === "hi"
+          ? "आपके कोई सपोर्ट टिकट नहीं हैं।"
+          : "You have no support tickets.";
+      }
+      const latestTicket = rows[0];
+      return lang === "hi"
+        ? `आपके पास ${rows.length} टिकट हैं। सबसे नया टिकट है: '${latestTicket.subject}' (Status: ${latestTicket.status})`
+        : `You have ${rows.length} ticket(s). The latest is: '${latestTicket.subject}' (Status: ${latestTicket.status})`;
     }
   }
 

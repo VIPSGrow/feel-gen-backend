@@ -1,10 +1,12 @@
 const { classifyIntent } = require("./intentClassifier");
 const { ecomTools } = require("./tools/ecomTools");
 const { mlmTools } = require("./tools/mlmTools");
+const { sharedTools } = require("./tools/sharedTools");
 const { formatAssistantResponse } = require("./responseFormatter");
 
 const ROLE_ALLOWED_TOOLS = {
   ECOM_USER: new Set([
+    "getMyTickets",
     "trackOrder",
     "getOrderStatus",
     "getMyAddresses",
@@ -12,6 +14,7 @@ const ROLE_ALLOWED_TOOLS = {
   ]),
   DISTRIBUTOR: new Set([
     "getWalletBalance",
+    "getMyTickets",
     "getDownlineCount",
     "getLatestCommissions",
   ]),
@@ -45,6 +48,13 @@ async function runChatbotAgent({ context, userMessage }) {
   }
 
   const toolResult = await (() => {
+    // Check shared tools first
+    if (Object.keys(sharedTools).includes(intent.toolName)) {
+      return sharedTools[intent.toolName]({
+        ...intent.params,
+        authContext: context,
+      });
+    }
     if (role === "ECOM_USER") {
       return ecomTools[intent.toolName]({
         ...intent.params,

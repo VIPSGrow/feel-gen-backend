@@ -31,6 +31,10 @@ function classifyIntent({ context, userMessage }) {
       return { toolName: "getMyWishlist", params: {}, rawUserMessage };
     }
 
+    if (/(ticket|support|case|issue)/.test(text)) {
+      return { toolName: "getMyTickets", params: {}, rawUserMessage };
+    }
+
     return { toolName: "getOrderStatus", params: { orderId }, rawUserMessage };
   }
 
@@ -45,6 +49,10 @@ function classifyIntent({ context, userMessage }) {
 
     if (/(commission|earnings|income|ref bonus|latest)/.test(text)) {
       return { toolName: "getLatestCommissions", params: {}, rawUserMessage };
+    }
+
+    if (/(ticket|support|case|issue)/.test(text)) {
+      return { toolName: "getMyTickets", params: {}, rawUserMessage };
     }
 
     // default
