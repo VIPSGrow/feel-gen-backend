@@ -2,24 +2,44 @@ const cron = require("node-cron");
 const db = require("../config/db");
 let cronWakeUpCount = 0;
 const FORCED_TEST_MODE = true;
+
+
+// function getLastDayRangeUTC() {
+//   const now = new Date();
+//   const year = now.getUTCFullYear();
+//   const month = now.getUTCMonth(); // current month (0-11)
+
+//   // Previous month
+//   const prevMonth = month - 1;
+//   //   const prevMonth = month;
+//   const prevYear = prevMonth < 0 ? year - 1 : year;
+//   const prevMonthAdj = prevMonth < 0 ? 11 : prevMonth;
+
+//   const from = new Date(Date.UTC(prevYear, prevMonthAdj, 1, 0, 0, 0));
+//   const toExclusive = new Date(Date.UTC(year, month, 1, 0, 0, 0));
+
+//   // DisplayTo: पिछले महीने की आखिरी तारीख की रात 11:59:59 (डेटाबेस और PDF के लिए)
+//   const displayTo = new Date(toExclusive.getTime() - 1000); // 1 सेकंड घटाया
+
+//   return { from, toExclusive, displayTo, prevYear, prevMonth: prevMonthAdj };
+// }
 function getLastDayRangeUTC() {
   const now = new Date();
   const year = now.getUTCFullYear();
-  const month = now.getUTCMonth(); // current month (0-11)
+  const month = now.getUTCMonth(); // 31 July को month = 6 (July)
 
-  // Previous month
-  const prevMonth = month - 1;
-  //   const prevMonth = month;
-  const prevYear = prevMonth < 0 ? year - 1 : year;
-  const prevMonthAdj = prevMonth < 0 ? 11 : prevMonth;
+  // Current Month (1st of July)
+  const from = new Date(Date.UTC(year, month, 1, 0, 0, 0));
 
-  const from = new Date(Date.UTC(prevYear, prevMonthAdj, 1, 0, 0, 0));
-  const toExclusive = new Date(Date.UTC(year, month, 1, 0, 0, 0));
+  // Next Month (1st of August - Exclusive)
+  const nextMonth = month === 11 ? 0 : month + 1;
+  const nextYear = month === 11 ? year + 1 : year;
+  const toExclusive = new Date(Date.UTC(nextYear, nextMonth, 1, 0, 0, 0));
 
-  // DisplayTo: पिछले महीने की आखिरी तारीख की रात 11:59:59 (डेटाबेस और PDF के लिए)
-  const displayTo = new Date(toExclusive.getTime() - 1000); // 1 सेकंड घटाया
+  // DisplayTo: 31 July रात 23:59:59
+  const displayTo = new Date(toExclusive.getTime() - 1000);
 
-  return { from, toExclusive, displayTo, prevYear, prevMonth: prevMonthAdj };
+  return { from, toExclusive, displayTo, currentYear: year, currentMonth: month };
 }
 
 async function getTdsPercent(client) {
@@ -48,6 +68,8 @@ async function processMonthlyTds() {
   try {
     const { from, toExclusive, displayTo, prevYear, prevMonth } =
       getLastDayRangeUTC();
+
+    console.log("\n ", from, toExclusive, displayTo, prevYear, prevMonth);
 
     // Idempotency: store processed month marker.
     // If the table doesn't exist yet, this query will fail; we'll add migration in next step.
@@ -180,7 +202,7 @@ async function processMonthlyTds() {
   } catch (err) {
     try {
       await client.query("ROLLBACK");
-    } catch (_) {}
+    } catch (_) { }
     console.error("[monthlyTdsCron] error:", err);
   } finally {
     client.release();
@@ -189,7 +211,7 @@ async function processMonthlyTds() {
 
 // Run on last day of month at 00:05 UTC.
 // node-cron doesn't natively support "last day" across all cases, so we run daily and guard.
-cron.schedule("5 0 * * *", async () => {
+cron.schedule("5 0 1 * *", async () => {
   cronWakeUpCount++;
   console.log(
     `\n⏱️  [Heartbeat Counter: ${cronWakeUpCount}] Node-cron task executing at: ${new Date().toISOString()}`,
