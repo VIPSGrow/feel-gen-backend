@@ -6,15 +6,11 @@ exports.getBalance = async (req, res) => {
     const userId = req.user.id;
     const query = `
     SELECT 
-    COALESCE(w.total_amount, 0) as total_balance_rs,
-    COALESCE(w.pending_amount, 0) as pending_balance_rs,
-    -- Amount to UV Conversion (Amount / 10)
-    (COALESCE(w.total_amount, 0) / 10.0) as total_balance,
-    (COALESCE(w.pending_amount, 0) / 10.0) as pending_balance,
-    (COALESCE(w.company_fund, 0) / 10.0) as company_balance,
-    -- Available Balance in UV
-    ((COALESCE(w.total_amount, 0) + COALESCE(w.pending_amount, 0)) / 10.0) as available_balance,
-    ((COALESCE(w.withdrawable_amount, 0) ) / 10.0) as withdrawable_amount,
+    COALESCE(w.total_amount, 0) as total_balance,
+    COALESCE(w.pending_amount, 0) as pending_balance,
+    COALESCE(w.company_fund, 0) as company_balance,
+    (COALESCE(w.total_amount, 0) + COALESCE(w.pending_amount, 0)) as available_balance,
+    COALESCE(w.withdrawable_amount, 0) as withdrawable_amount,
     (SELECT COUNT(*) FROM transactions WHERE user_id = $1) as total_transactions
 FROM wallets w
 WHERE w.user_id = $1;`;
@@ -56,18 +52,15 @@ exports.getHistory = async (req, res) => {
 
     let query = `
       SELECT 
-        t.id, t.amount as amount_rs,
+        t.id, t.amount,
         t.user_id,
-        (t.amount / NULLIF((s.setting_value->>'uv_value')::numeric, 0)) as amount,
-         t.type, t.category, t.status, t.remarks, t.created_at,
+        t.type, t.category, t.status, t.remarks, t.created_at,
         u.username as other_user,
         o.order_id
       FROM transactions t
-      CROSS JOIN app_settings s
-      LEFT JOIN users u ON t.source_user_id = u.id OR (t.user_id != $1 AND t.source_user_id = $1)
+      LEFT JOIN users u ON t.source_user_id = u.id OR (t.user_id != $1 AND t.source_user_id = u.id)
       LEFT JOIN orders o ON t.order_id = o.id
-      WHERE t.user_id = $1 AND s.setting_key = 'point_system'
-    `;
+      WHERE t.user_id = $1`;
     const params = [userId];
 
     if (type) {

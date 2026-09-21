@@ -48,7 +48,6 @@ app.use("/api/settings", require("./routes/settingsRoutes"));
 app.use("/api/tax", require("./routes/taxRoute"));
 app.use("/api/orders", require("./routes/orderRoutes"));
 app.use("/api/ecom", require("./routes/ecomRoutes"));
-app.use("/api/plan", require("./routes/planPurchaseRoute"));
 app.use("/api/payment", require("./routes/razorpayRoute"));
 app.use("/api/roles", require("./routes/rolesRoutes"));
 app.use("/api/staff", require("./routes/staffRoutes"));

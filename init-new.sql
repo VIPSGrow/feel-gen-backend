@@ -2099,6 +2099,7 @@ CREATE TABLE public.users (
     nominee_contact character varying(15),
     nominee_aadhaar character varying(12),
     agreed_to_terms boolean DEFAULT false,
+    gstin character varying(20),
     created_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP,
     role character varying(20) DEFAULT 'Distributor'::character varying,
     is_active boolean DEFAULT true,

@@ -81,6 +81,7 @@ exports.getKycRequests = async (req, res) => {
 };
 
 exports.updateKycRequest = async (req, res) => {
+  const client = await db.connect();
   try {
     const { id } = req.params;
     const { status, remark } = req.body; // status: 'approved' | 'rejected'
@@ -91,8 +92,7 @@ exports.updateKycRequest = async (req, res) => {
         .json({ status: false, error: "Status must be approved or rejected" });
     }
 
-    // Get request to check user_id
-    const request = await db.query(
+    const request = await client.query(
       "SELECT user_id FROM kyc_requests WHERE id = $1",
       [id],
     );
@@ -103,29 +103,29 @@ exports.updateKycRequest = async (req, res) => {
     }
     const userId = request.rows[0].user_id;
 
-    const tx = await db.query("BEGIN");
+    await client.query("BEGIN");
     try {
-      // Update request
-      await db.query(
+      await client.query(
         "UPDATE kyc_requests SET status = $1, rejection_remark = $2 WHERE id = $3",
         [status, remark || null, id],
       );
 
-      // Update user kyc_status
       const userStatus = status === "approved";
 
-      // let is_active = false;
-
-      // if (status === "approved") {
-      //   is_active = true;
-      // }
-
-      await db.query("UPDATE users SET kyc_status = $1 WHERE id = $2", [
+      await client.query("UPDATE users SET kyc_status = $1 WHERE id = $2", [
         userStatus,
         userId,
       ]);
 
-      await db.query("COMMIT");
+      await client.query(
+        `INSERT INTO wallets
+          (user_id, total_amount, pending_amount, left_count, right_count, paid_pairs, company_fund, withdrawable_amount)
+         VALUES ($1, 0, 0, 0, 0, 0, 0, 0)
+         ON CONFLICT (user_id) DO NOTHING`,
+        [userId],
+      );
+
+      await client.query("COMMIT");
 
       res.json({
         status: true,
@@ -134,11 +134,13 @@ exports.updateKycRequest = async (req, res) => {
         user_id: userId,
       });
     } catch (txErr) {
-      await db.query("ROLLBACK");
+      await client.query("ROLLBACK");
       throw txErr;
     }
   } catch (err) {
     console.error(err);
     res.status(500).json({ status: false, error: "Server error" });
+  } finally {
+    client.release();
   }
 };

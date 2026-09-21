@@ -34,6 +34,7 @@ CREATE TABLE IF NOT EXISTS users (
     nominee_contact VARCHAR(15),
     nominee_aadhaar VARCHAR(12),
     agreed_to_terms BOOLEAN DEFAULT FALSE,
+    gstin VARCHAR(20),
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -59,6 +60,8 @@ CREATE TABLE IF NOT EXISTS products (
     subcategories INTEGER[],
     attributes INTEGER[],
     variants JSONB,
+    mrp_percentage NUMERIC(5,2) DEFAULT 0.00 CHECK (mrp_percentage >= 0 AND mrp_percentage <= 100),
+    dpc_percentage NUMERIC(5,2) DEFAULT 0.00 CHECK (dpc_percentage >= 0 AND dpc_percentage <= 100),
 
     -- Shipping details
     hsn_code VARCHAR(30),

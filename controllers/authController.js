@@ -3,6 +3,7 @@ const bcrypt = require("bcrypt");
 const jwt = require("jsonwebtoken");
 const crypto = require("crypto");
 const otpService = require("../utils/otpService");
+const evaluateAndUpgradeRank = require("../services/commission/RankUpgrade");
 
 // exports.register = async (req, res) => {
 //     const { phone, email, password, referrer_id } = req.body;
@@ -68,7 +69,6 @@ exports.register = async (req, res) => {
         .json({ message: "Phone and password are required" });
     }
 
-    // 🔹 Generate username
     const generateUsername = async () => {
       let username;
       let attempts = 0;
@@ -90,69 +90,119 @@ exports.register = async (req, res) => {
 
     const username = await generateUsername();
 
-    // 🔹 Hash password
+    const generateReferralCode = async () => {
+      const now = new Date();
+      const year = (now.getFullYear() % 100).toString().padStart(2, "0");
+      const month = (now.getMonth() + 1).toString().padStart(2, "0");
+      const prefix = `FS${year}${month}`;
+
+      let sn = 1;
+      while (true) {
+        const snStr = sn.toString().padStart(4, "0");
+        const candidate = `${prefix}${snStr}`;
+
+        const exists = await client.query(
+          "SELECT 1 FROM users WHERE referral_code = $1",
+          [candidate],
+        );
+
+        if (exists.rows.length === 0) return candidate;
+
+        sn++;
+        if (sn > 9999) throw new Error("Referral code limit reached");
+      }
+    };
+
+    const referralCode = await generateReferralCode();
+
     const salt = await bcrypt.genSalt(10);
     const hashedPassword = await bcrypt.hash(password, salt);
 
-    // 🔥 LOCK REFERRER ROW
-    const referrerRes = await client.query(
-      "SELECT id, node_path, binary_path FROM users WHERE id = $1 FOR UPDATE",
-      [referrer_id],
-    );
+    let referrerInfo = null;
+    let nodePath = username;
+    let referrerName = null;
+    let referrerContact = null;
 
-    if (referrerRes.rows.length === 0) {
-      throw new Error("Invalid referrer");
-    }
+    if (referrer_id) {
+      const referrerRes = await client.query(
+        "SELECT id, node_path, full_name, phone FROM users WHERE id = $1 FOR UPDATE",
+        [referrer_id],
+      );
 
-    const parent = referrerRes.rows[0];
+      if (referrerRes.rows.length === 0) {
+        throw new Error("Invalid referrer");
+      }
 
-    // 🔥 CHECK CHILDREN (LOCK THEM TOO)
-    const childrenRes = await client.query(
-      `SELECT position FROM users
-             WHERE subpath(binary_path, 0, nlevel(binary_path)-1) = $1
-             FOR UPDATE`,
-      [parent.binary_path],
-    );
-
-    const taken = childrenRes.rows.map((r) => r.position);
-
-    let position;
-
-    if (!taken.includes(1)) {
-      position = 1; // LEFT
-    } else if (!taken.includes(2)) {
-      position = 2; // RIGHT
+      referrerInfo = referrerRes.rows[0];
+      const parentPath = referrerInfo.node_path || referrerInfo.id.toString();
+      const childCount = await client.query(
+        "SELECT COUNT(*) FROM users WHERE referrer_id = $1",
+        [referrer_id],
+      );
+      nodePath = `${parentPath}.${parseInt(childCount.rows[0].count) + 1}`;
+      referrerName = referrerInfo.full_name;
+      referrerContact = referrerInfo.phone;
     } else {
-      throw new Error("Both legs are already filled");
+      const rootCheck = await client.query("SELECT 1 FROM users LIMIT 1");
+      if (rootCheck.rows.length > 0) {
+        throw new Error(
+          "A referrer ID is required for new registrations after the first user.",
+        );
+      }
+      nodePath = "root";
     }
 
-    // 🔹 Build paths
-    const binaryPath = `${parent.binary_path}.${position}`;
-    const nodePath = `${parent.node_path}.${username}`;
-
-    // 🔹 Insert user
     const newUser = await client.query(
-      `INSERT INTO users 
-            (username, email, phone, password_hash, referrer_id, node_path, binary_path, position)
-            VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
-            RETURNING *`,
+      `INSERT INTO users
+          (username, email, phone, password_hash, referrer_id, referral_code,
+           referrer_name, referrer_contact, node_path, is_active, kyc_status,
+           business_level, agreed_to_terms)
+          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+          RETURNING *`,
       [
         username,
-        email,
+        email || null,
         phone,
         hashedPassword,
-        referrer_id,
+        referrer_id || null,
+        referralCode,
+        referrerName,
+        referrerContact,
         nodePath,
-        binaryPath,
-        position,
+        false,
+        false,
+        0,
+        false,
       ],
     );
 
+    await client.query(
+      `INSERT INTO wallets
+        (user_id, total_amount, pending_amount, left_count, right_count, paid_pairs, company_fund, withdrawable_amount)
+       VALUES ($1, 0, 0, 0, 0, 0, 0, 0)
+       ON CONFLICT (user_id) DO NOTHING`,
+      [newUser.rows[0].id],
+    );
+
+    // New team member increases team_size for every ancestor - re-evaluate rank for each.
+    let ancestorId = referrer_id || null;
+    while (ancestorId) {
+      await evaluateAndUpgradeRank(client, ancestorId);
+      const ancestorRes = await client.query(
+        `SELECT referrer_id FROM users WHERE id = $1`,
+        [ancestorId],
+      );
+      ancestorId = ancestorRes.rows[0]?.referrer_id || null;
+    }
+
     await client.query("COMMIT");
+
+    const createdUser = newUser.rows[0];
+    delete createdUser.password_hash;
 
     res.status(201).json({
       message: "User registered successfully",
-      user: newUser.rows[0],
+      user: createdUser,
     });
   } catch (err) {
     await client.query("ROLLBACK");

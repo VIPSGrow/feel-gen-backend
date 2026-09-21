@@ -165,12 +165,38 @@ exports.getProducts = async (req, res) => {
         p.*, 
         -- Fallback to 'Uncategorized' if the category doesn't exist
         COALESCE(c.name, 'Uncategorized') as category_name,        
-        COUNT(DISTINCT v.id) AS variant_count, -- Changed to DISTINCT to prevent inflation from other joins
+        COUNT(DISTINCT v.id) AS variant_count,
         COALESCE(SUM(inv.quantity), 0) AS total_stock,
 
         -- Average Rating and Total Review Count
         COALESCE(ROUND(AVG(r.rating), 1), 0.0) AS average_rating,
         COUNT(DISTINCT r.id) AS total_reviews,
+
+        -- MRP and DPC percentages
+        p.mrp_percentage,
+        p.dpc_percentage,
+
+        -- Effective price (discounted > 0 ? discounted : base)
+        CASE 
+          WHEN p.discounted_price > 0 THEN p.discounted_price 
+          ELSE p.base_price 
+        END AS effective_price,
+
+        -- Calculated MRP price for end user (effective_price + mrp%)
+        ROUND(
+          CASE 
+            WHEN p.discounted_price > 0 THEN p.discounted_price 
+            ELSE p.base_price 
+          END * (1 + COALESCE(p.mrp_percentage, 0) / 100.0), 2
+        ) AS mrp_price,
+
+        -- Calculated DPC price for distributor (effective_price - dpc%)
+        ROUND(
+          CASE 
+            WHEN p.discounted_price > 0 THEN p.discounted_price 
+            ELSE p.base_price 
+          END * (1 - COALESCE(p.dpc_percentage, 0) / 100.0), 2
+        ) AS dpc_price,
 
         -- Taxable price calculation
         ROUND(
@@ -287,6 +313,15 @@ exports.getProductsForDistributor = async (req, res) => {
           'tax_id', p.tax_id,
           'unit_price', p.base_price,
           'discounted_price', COALESCE(p.discounted_price, p.base_price),
+          -- MRP and DPC percentages
+          'mrp_percentage', p.mrp_percentage,
+          'dpc_percentage', p.dpc_percentage,
+          -- DPC Price for distributor (discounted or base price minus dpc%, plus tax)
+          'dpc_price', ROUND(
+              (CASE WHEN p.discounted_price > 0 THEN p.discounted_price ELSE p.base_price END 
+              * (1 - COALESCE(p.dpc_percentage, 0) / 100.0)
+              * (1 + COALESCE(t.tax_percentage, 0) / 100.0))::numeric, 2
+            ),
           -- Best Practice: Backend calculates the final display price
           'base_price', ROUND(
               (CASE WHEN p.discounted_price > 0 THEN p.discounted_price ELSE p.base_price END 
@@ -427,6 +462,8 @@ exports.createProduct = async (req, res) => {
       dimension_width,
       dimension_height,
       dimension_unit,
+      mrp_percentage,
+      dpc_percentage,
       variants: variantsStr,
     } = req.body;
 
@@ -484,11 +521,13 @@ exports.createProduct = async (req, res) => {
 
     const basePrice = parseFloat(price) || 0;
     const b_discounted_price = parseFloat(discounted_price) || 0;
+    const mrpPct = parseFloat(mrp_percentage) || 0;
+    const dpcPct = parseFloat(dpc_percentage) || 0;
     const result = await db.query(
       `INSERT INTO products (cat_id, name, description, short_desc, f_image, g_image, status, tax_id, base_price, subcategories, attributes, discounted_price, slug,
-        hsn_code, weight, dimension_length, dimension_width, dimension_height, dimension_unit)
+        hsn_code, weight, dimension_length, dimension_width, dimension_height, dimension_unit, mrp_percentage, dpc_percentage)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13,
-        $14, $15, $16, $17, $18, $19) RETURNING *`,
+         $14, $15, $16, $17, $18, $19, $20, $21) RETURNING *`,
       [
         cat_id || null,
         name.trim(),
@@ -523,6 +562,8 @@ exports.createProduct = async (req, res) => {
           ? parseFloat(dimension_height)
           : null,
         dimension_unit || null,
+        mrpPct,
+        dpcPct,
       ],
     );
 
@@ -1030,8 +1071,21 @@ exports.getProductByslug = async (req, res) => {
           'f_image', p.f_image,
           'g_image', p.g_image,
           'tax_id', p.tax_id,
+          'price', p.base_price,
           'base_price', ROUND(p.base_price * (1 + COALESCE(t.tax_percentage, 0) / 100.0), 2),
           'discounted_price', ROUND(COALESCE(p.discounted_price, p.base_price) * (1 + COALESCE(t.tax_percentage, 0) / 100.0), 2),
+          'mrp_percentage', p.mrp_percentage,
+          'dpc_percentage', p.dpc_percentage,
+          -- DPC Price (effective_price - dpc%)
+          'dpc_price', ROUND(
+              (CASE WHEN p.discounted_price > 0 THEN p.discounted_price ELSE p.base_price END 
+              * (1 - COALESCE(p.dpc_percentage, 0) / 100.0))::numeric, 2
+            ),
+          -- MRP Price (effective_price + mrp%)
+          'mrp_price', ROUND(
+              (CASE WHEN p.discounted_price > 0 THEN p.discounted_price ELSE p.base_price END 
+              * (1 + COALESCE(p.mrp_percentage, 0) / 100.0))::numeric, 2
+            ),
           'status', p.status,
           'created_at', p.created_at,
           'hsn_code', p.hsn_code,
@@ -1181,6 +1235,8 @@ exports.updateProduct = async (req, res) => {
       dimension_width,
       dimension_height,
       dimension_unit,
+      mrp_percentage,
+      dpc_percentage,
     } = req.body;
 
     // console.log("g-image - ", req.body);
@@ -1322,6 +1378,18 @@ exports.updateProduct = async (req, res) => {
     if (discounted_price !== undefined) {
       updates.push(`discounted_price = $${paramIndex}`);
       values.push(discounted_price || null);
+      paramIndex++;
+    }
+
+    if (mrp_percentage !== undefined) {
+      updates.push(`mrp_percentage = $${paramIndex}`);
+      values.push(parseFloat(mrp_percentage) || 0);
+      paramIndex++;
+    }
+
+    if (dpc_percentage !== undefined) {
+      updates.push(`dpc_percentage = $${paramIndex}`);
+      values.push(parseFloat(dpc_percentage) || 0);
       paramIndex++;
     }
 

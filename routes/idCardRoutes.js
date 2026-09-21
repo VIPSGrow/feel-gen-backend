@@ -13,11 +13,16 @@ router.post("/generate", auth, async (req, res) => {
     const userId = req.user.id;
 
     // Fetch user data needed for overlays/QR
+    // current_rank_id is NULL until RankUpgrade first promotes the user, so
+    // fall back to the plan's base rank (rank_no = 0, "Active Partner").
     const userRes = await db.query(
-      `SELECT u.id, u.full_name, u.referral_code, u.phone, u.business_level, u.position, 
-      u.created_at, l.level_name 
+      `SELECT u.id, u.full_name, u.referral_code, u.phone, u.current_rank_id as business_level , u.position, 
+      u.created_at, COALESCE(r.rank_name, dr.rank_name) as level_name 
       FROM users u 
-      left join level_commissions l on l.level_no = (u.position - 1)
+      left join mlm_ranks r on r.id = u.current_rank_id
+      left join mlm_ranks dr on dr.rank_no = 0 and dr.plan_settings_id = (
+        SELECT id FROM mlm_plan_settings ORDER BY id LIMIT 1
+      )
       WHERE u.id = $1`,
       [userId],
     );

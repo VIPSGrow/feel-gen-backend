@@ -216,26 +216,75 @@ exports.deleteSetting = async (req, res) => {
   }
 };
 
-// Level Commissions CRUD
+// Level Commissions - returns everything the admin needs to manage the live
+// commission structure: self cashback, direct partner, generation levels
+// (1-7), ranks, and rank rewards.
 exports.getLevelCommissions = async (req, res) => {
   try {
-    const { level_no } = req.query;
-    let query = "SELECT * FROM level_commissions";
-    const params = [];
+    const selfRes = await db.query(
+      "SELECT level_no, commission_percentage, level_name FROM level_commissions WHERE level_no = 0",
+    );
 
-    if (level_no) {
-      query += " WHERE level_no = $1";
-      params.push(parseInt(level_no));
-    }
+    const planRes = await db.query(
+      `SELECT id, direct_partner_commission_percent
+       FROM mlm_plan_settings
+       WHERE is_active = TRUE
+       ORDER BY effective_from DESC
+       LIMIT 1`,
+    );
+    const plan = planRes.rows[0];
 
-    query += " ORDER BY level_no";
+    const [generationRes, ranksRes, rewardsRes] = plan
+      ? await Promise.all([
+          db.query(
+            `SELECT level_no, commission_percent, level_name
+             FROM mlm_generation_commissions
+             WHERE plan_settings_id = $1
+             ORDER BY level_no`,
+            [plan.id],
+          ),
+          db.query(
+            `SELECT * FROM mlm_ranks WHERE plan_settings_id = $1 ORDER BY rank_no`,
+            [plan.id],
+          ),
+          db.query(
+            `SELECT rr.*, r.rank_no, r.rank_name
+             FROM mlm_rank_rewards rr
+             JOIN mlm_ranks r ON r.id = rr.rank_id
+             WHERE r.plan_settings_id = $1
+             ORDER BY r.rank_no, rr.id`,
+            [plan.id],
+          ),
+        ])
+      : [{ rows: [] }, { rows: [] }, { rows: [] }];
 
-    const result = await db.query(query, params);
+    const commissions = [
+      {
+        level_no: 0,
+        type: "self_cashback",
+        level_name: selfRes.rows[0]?.level_name || "Self Cashback",
+        commission_percentage: Number(selfRes.rows[0]?.commission_percentage || 0),
+      },
+      {
+        level_no: 0,
+        type: "direct_partner",
+        level_name: "Direct Partner",
+        commission_percentage: Number(plan?.direct_partner_commission_percent || 0),
+      },
+      ...generationRes.rows.map((r) => ({
+        level_no: Number(r.level_no),
+        type: "generation",
+        level_name: r.level_name,
+        commission_percentage: Number(r.commission_percent),
+      })),
+    ];
 
     res.status(200).json({
       success: true,
       message: "Level commissions fetched successfully",
-      data: result.rows,
+      data: commissions,
+      ranks: ranksRes.rows,
+      rewards: rewardsRes.rows,
     });
   } catch (error) {
     console.error("Error fetching level commissions:", error);

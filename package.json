@@ -9,7 +9,8 @@
     "seed": "node scripts/seed-data.js",
     "admin": "node scripts/seed-admin.js",
     "c-user": "node scripts/seed-user.js",
-    "inventory": "node scripts/seed-main-store-inventory.js"
+    "inventory": "node scripts/seed-main-store-inventory.js",
+    "setting": "node scripts/seed-app-settings.js"
   },
   "dependencies": {
     "@pdf-lib/fontkit": "^1.1.1",

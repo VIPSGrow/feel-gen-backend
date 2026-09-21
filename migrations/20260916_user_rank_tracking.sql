@@ -1,0 +1,6 @@
+BEGIN;
+
+ALTER TABLE users
+  ADD COLUMN IF NOT EXISTS current_rank_id BIGINT REFERENCES mlm_ranks(id);
+
+COMMIT;

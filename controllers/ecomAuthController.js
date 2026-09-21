@@ -75,16 +75,34 @@ exports.register = async (req, res) => {
     );
 
     const user = result.rows[0];
-    const token = jwt.sign({ id: user.id }, process.env.JWT_SECRET, {
-      expiresIn: "7d",
-    });
 
-    res.status(201).json({
+    const distributorQuery = await db.query(
+      `SELECT 
+        json_build_object(
+            'id', u.id,
+            'full_name', u.full_name,
+            'phone', u.phone
+        ) AS distributor_info
+       FROM users u 
+       WHERE u.referral_code = $1`,
+      [user.distributor_code]
+    );
+
+    const distributor_info = distributorQuery.rows[0]?.distributor_info || null;
+
+    const token = jwt.sign(
+      { id: user.id, type: "ECOM_USER" },
+      process.env.JWT_SECRET,
+      { expiresIn: "7d" }
+    );
+
+    res.json({
       status: true,
-      message: "User registered successfully",
-      // insertFields,
-      // insertValues
-      user,
+      message: "Login successful",
+      user: {
+        ...user,
+        distributor_info
+      },
       token,
     });
   } catch (err) {
@@ -93,78 +111,6 @@ exports.register = async (req, res) => {
   }
 };
 
-// exports.login = async (req, res) => {
-//   try {
-//     const { phone, email, password } = req.body;
-//     if (!phone && !email) {
-//       return res
-//         .status(400)
-//         .json({ status: false, error: "Phone or email required" });
-//     }
-//     if (!password) {
-//       return res
-//         .status(400)
-//         .json({ status: false, error: "Password required" });
-//     }
-
-//     const whereClause = phone ? "e.phone = $1" : "e.email = $1";
-//     const loginId = phone || email;
-//     // const user = await db.query(
-//     //   `SELECT id, name, email, phone, password, status FROM ecom_user WHERE ${whereClause}`,
-//     //   [loginId]
-//     // );
-//     const query = `SELECT
-//     e.id,
-//     e.name,
-//     e.email,
-//     e.phone,
-//     e.status ,
-//     json_build_object(
-//         'id', u.id,
-//         'full_name', u.full_name,
-//         'phone', u.phone
-//     ) AS user_json
-//     FROM ecom_user e
-//     LEFT JOIN users u ON u.referral_code = e.distributor_code WHERE ${whereClause}`;
-
-//     console.log("query - ", query);
-
-//     const user = await db.query(query, [loginId]);
-
-//     if (user.rows.length === 0) {
-//       return res
-//         .status(400)
-//         .json({ status: false, error: "Invalid credentials" });
-//     }
-
-//     const validUser = user.rows[0];
-//     if (!validUser.status) {
-//       return res.status(400).json({ status: false, error: "Account disabled" });
-//     }
-
-//     const isMatch = await bcrypt.compare(password, validUser.password);
-//     if (!isMatch) {
-//       return res
-//         .status(400)
-//         .json({ status: false, error: "Invalid credentials" });
-//     }
-
-//     const token = jwt.sign({ id: validUser.id }, process.env.JWT_SECRET, {
-//       expiresIn: "7d",
-//     });
-
-//     delete validUser.password;
-//     res.json({
-//       status: true,
-//       message: "Login successful",
-//       user: validUser,
-//       token,
-//     });
-//   } catch (err) {
-//     console.error(err);
-//     res.status(500).json({ status: false, error: "Server error" });
-//   }
-// };
 
 exports.login = async (req, res) => {
   try {

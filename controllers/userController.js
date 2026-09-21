@@ -734,61 +734,22 @@ exports.createUser = async (req, res) => {
     const salt = await bcrypt.genSalt(10);
     const hashedPassword = await bcrypt.hash(password, salt);
 
-    // 🔥 REFERRER + LOCK
-    let nodePath = username;
-    let binaryPath = "1";
-    let position = null;
-
-    let calculatedBusinessLevel = 0; // Default for root
-
     if (referrer_id) {
       const referrer = await client.query(
-        "SELECT node_path, binary_path FROM users WHERE id = $1 FOR UPDATE",
+        "SELECT id FROM users WHERE id = $1 FOR UPDATE",
         [referrer_id],
       );
 
       if (referrer.rows.length === 0) {
         throw new Error("Invalid referrer");
       }
-
-      const parent = referrer.rows[0];
-
-      nodePath = `${parent.node_path}.${username}`;
-
-      // 🔥 LOCK CHILDREN
-      const children = await client.query(
-        `SELECT position FROM users 
-         WHERE subpath(binary_path, 0, nlevel(binary_path)-1) = $1
-         FOR UPDATE`,
-        [parent.binary_path],
-      );
-
-      const taken = children.rows.map((r) => r.position);
-
-      // 🔥 AUTO LEFT → RIGHT → REJECT
-      if (!taken.includes(1)) {
-        position = 1;
-      } else if (!taken.includes(2)) {
-        position = 2;
-      } else {
-        throw new Error("Both legs are already filled");
-      }
-
-      binaryPath = `${parent.binary_path}.${position}`;
-      // calculatedBusinessLevel = binaryPath.split(".").length;
     } else {
-      // Agar referrer_id nahi hai, toh check karein kya system mein pehle se koi Root hai?
-      const rootCheck = await client.query(
-        "SELECT 1 FROM users WHERE binary_path = '1'",
-      );
+      const rootCheck = await client.query("SELECT 1 FROM users LIMIT 1");
       if (rootCheck.rows.length > 0) {
         throw new Error(
-          "System already has a root user. A referrer ID is required for new registrations.",
+          "A referrer ID is required for new registrations after the first user.",
         );
       }
-      // Agar koi nahi hai, tabhi ise path '1' milega
-      binaryPath = "1";
-      nodePath = username;
     }
 
     // 🔹 Referral Code Logic (same as yours)
@@ -831,6 +792,26 @@ exports.createUser = async (req, res) => {
       }
     }
 
+    // 🔹 Determine node_path for tree hierarchy
+    let node_path;
+    if (referrer_id) {
+      const referrerData = await client.query(
+        "SELECT node_path FROM users WHERE id = $1",
+        [referrer_id],
+      );
+      if (referrerData.rows.length === 0) {
+        throw new Error("Invalid referrer");
+      }
+      const parentPath = referrerData.rows[0].node_path;
+      const childCount = await client.query(
+        "SELECT COUNT(*) FROM users WHERE referrer_id = $1",
+        [referrer_id],
+      );
+      node_path = `${parentPath}.${parseInt(childCount.rows[0].count) + 1}`;
+    } else {
+      node_path = "root";
+    }
+
     // 🔥 FINAL INSERT
     const newUser = await client.query(
       `INSERT INTO users (
@@ -841,15 +822,15 @@ exports.createUser = async (req, res) => {
         nominee_name, nominee_relationship, nominee_age, nominee_contact, nominee_aadhaar,
         business_level, agreed_to_terms, kyc_status,
         username, password_hash, referrer_id,
-        node_path, binary_path, position, is_active, gstin, profile_pic
-      ) VALUES (
+        node_path, is_active, gstin, profile_pic, initiator_user_id
+       ) VALUES (
       $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,
       $13,$14,$15,$16,$17,
       $18,$19,$20,
       $21,$22,$23,$24,$25,
       $26,$27,$28,
       $29,$30,$31,
-      $32,$33,$34, $35, $36, $37
+      $32,$33,$34,$35,$36
       ) RETURNING *`,
       [
         full_name || null,
@@ -883,11 +864,10 @@ exports.createUser = async (req, res) => {
         username,
         hashedPassword,
         referrer_id || null,
-        nodePath,
-        binaryPath,
-        position,
+        node_path,
         false,
         gst_no || "",
+        null,
         initiator_user_id || null,
       ],
     );

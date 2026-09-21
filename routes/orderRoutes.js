@@ -4,6 +4,7 @@ const authMiddleware = require("../middleware/authMiddleware");
 const isSuperAdmin = require("../middleware/isSuperAdmin");
 const {
   placeOrder,
+  placeDistributorOrder,
   getMyOrders,
   getAllOrders,
   getOrderDetail,
@@ -21,7 +22,8 @@ const {
   getRecievedOrder,
 } = require("../controllers/distributor_OrderController");
 
-router.post("/", ecomAuth, placeOrder); // User place order
+router.post("/", ecomAuth, placeOrder); // Retail ecom user place order
+router.post("/distributor-place", authMiddleware, placeDistributorOrder); // MLM distributor (users table) self purchase - min 700 required, KYC check, pending self commission + is_active activation
 router.get("/my", ecomAuth, getMyOrders); // My orders
 
 router.get("/", [authMiddleware, isSuperAdmin], getAllOrders); // Admin all

@@ -679,27 +679,10 @@ exports.listAllTransactionsForSuperAdmin = async (req, res) => {
         t.source_user_id,
         t.remarks,
         t.status,
-        t.created_at,
-         COALESCE(
-            SUM(
-              CASE
-                WHEN (s.setting_value->>'uv_type') = 'percentage'
-                  THEN (t.amount * (s.setting_value->>'uv_value')::numeric) / 100
-                ELSE (t.amount / NULLIF((s.setting_value->>'uv_value')::numeric, 0))
-              END
-            ) ,
-            0
-          )::numeric(15,2) AS amount
+        t.created_at
       FROM transactions t
       LEFT JOIN users u ON u.id = t.user_id::int
-      CROSS JOIN app_settings s
-      WHERE s.setting_key = 'point_system'
-        ${whereSql ? whereSql.replace("WHERE ", "AND ") : ""}
-      GROUP BY 
-        t.id,
-        u.username,
-        u.full_name,
-        s.setting_value
+      ${whereSql}
       ORDER BY t.created_at DESC
       LIMIT $${pIndex} OFFSET $${pIndex + 1}
     `;
@@ -723,49 +706,9 @@ exports.listAllTransactionsForSuperAdmin = async (req, res) => {
         SELECT
           COALESCE(w.total_amount, 0)::numeric(15,2) AS total_amount,
           COALESCE(w.pending_amount, 0)::numeric(15,2) AS pending_amount,
-          (COALESCE(w.total_amount, 0) + COALESCE(w.pending_amount, 0))::numeric(15,2) AS available_balance,
-
-          -- UV conversion for wallet amounts (same logic as transactions)
-          COALESCE(
-            CASE
-              WHEN (s.setting_value->>'uv_type') = 'percentage'
-                THEN (COALESCE(w.total_amount, 0) * (s.setting_value->>'uv_value')::numeric) / 100
-              ELSE (COALESCE(w.total_amount, 0) / NULLIF((s.setting_value->>'uv_value')::numeric, 0))
-            END,
-          0
-          )::numeric(15,2) AS total_amount_uv,
-
-          COALESCE(
-            CASE
-              WHEN (s.setting_value->>'uv_type') = 'percentage'
-                THEN (COALESCE(w.pending_amount, 0) * (s.setting_value->>'uv_value')::numeric) / 100
-              ELSE (COALESCE(w.pending_amount, 0) / NULLIF((s.setting_value->>'uv_value')::numeric, 0))
-            END,
-          0
-          )::numeric(15,2) AS pending_amount_uv,
-
-          COALESCE(
-            CASE
-              WHEN (s.setting_value->>'uv_type') = 'percentage'
-                THEN ((COALESCE(w.total_amount, 0) + COALESCE(w.pending_amount, 0)) * (s.setting_value->>'uv_value')::numeric) / 100
-              ELSE ((COALESCE(w.total_amount, 0) + COALESCE(w.pending_amount, 0)) / NULLIF((s.setting_value->>'uv_value')::numeric, 0))
-            END,
-          0
-          )::numeric(15,2) AS available_balance_uv,
-
-          COALESCE(
-            CASE
-              WHEN (s.setting_value->>'uv_type') = 'percentage'
-                THEN ((COALESCE(w.company_fund, 0)) * (s.setting_value->>'uv_value')::numeric) / 100
-              ELSE ((COALESCE(w.company_fund, 0)) / NULLIF((s.setting_value->>'uv_value')::numeric, 0))
-            END,
-          0
-          )::numeric(15,2) AS company_fund_uv
-
+          (COALESCE(w.total_amount, 0) + COALESCE(w.pending_amount, 0))::numeric(15,2) AS available_balance
         FROM wallets w
-        CROSS JOIN app_settings s
-        WHERE s.setting_key = 'point_system'
-          AND w.user_id = $1
+        WHERE w.user_id = $1
       `;
 
       // Transaction totals are computed only for the same filtered set.
@@ -773,60 +716,12 @@ exports.listAllTransactionsForSuperAdmin = async (req, res) => {
       const transactionTotalsQuery = `
         SELECT
           COUNT(*)::int AS total_transactions,
-
-          -- Raw amount totals
           COALESCE(SUM(amount) FILTER (WHERE type = 'credit'), 0)::numeric(15,2) AS total_credits,
           COALESCE(SUM(amount) FILTER (WHERE type = 'debit'), 0)::numeric(15,2) AS total_debits,
           COALESCE(SUM(amount) FILTER (WHERE type = 'credit'), 0)
-            - COALESCE(SUM(amount) FILTER (WHERE type = 'debit'), 0) AS net_amount,
-
-          -- UV totals (depends on uv_type)
-          COALESCE(
-            SUM(
-              CASE
-                WHEN (s.setting_value->>'uv_type') = 'percentage'
-                  THEN (amount * (s.setting_value->>'uv_value')::numeric) / 100
-                ELSE (amount / NULLIF((s.setting_value->>'uv_value')::numeric, 0))
-              END
-            ) FILTER (WHERE type = 'credit'),
-            0
-          )::numeric(15,2) AS total_credits_uv,
-
-          COALESCE(
-            SUM(
-              CASE
-                WHEN (s.setting_value->>'uv_type') = 'percentage'
-                  THEN (amount * (s.setting_value->>'uv_value')::numeric) / 100
-                ELSE (amount / NULLIF((s.setting_value->>'uv_value')::numeric, 0))
-              END
-            ) FILTER (WHERE type = 'debit'),
-            0
-          )::numeric(15,2) AS total_debits_uv,
-
-          COALESCE(
-            SUM(
-              CASE
-                WHEN (s.setting_value->>'uv_type') = 'percentage'
-                  THEN (amount * (s.setting_value->>'uv_value')::numeric) / 100
-                ELSE (amount / NULLIF((s.setting_value->>'uv_value')::numeric, 0))
-              END
-            ) FILTER (WHERE type = 'credit'),
-            0
-          )::numeric(15,2)
-          - COALESCE(
-              SUM(
-                CASE
-                  WHEN (s.setting_value->>'uv_type') = 'percentage'
-                    THEN (amount * (s.setting_value->>'uv_value')::numeric) / 100
-                  ELSE (amount / NULLIF((s.setting_value->>'uv_value')::numeric, 0))
-                END
-              ) FILTER (WHERE type = 'debit'),
-              0
-            )::numeric(15,2) AS net_amount_uv
+            - COALESCE(SUM(amount) FILTER (WHERE type = 'debit'), 0) AS net_amount
         FROM transactions t
-        CROSS JOIN app_settings s
-        WHERE s.setting_key = 'point_system'
-        ${whereSql ? whereSql.replace("WHERE ", "AND ") : ""}
+        ${whereSql}
       `;
 
       const [walletRes, txnTotalsRes] = await Promise.all([
@@ -838,9 +733,6 @@ exports.listAllTransactionsForSuperAdmin = async (req, res) => {
         total_amount: 0,
         pending_amount: 0,
         available_balance: 0,
-        total_amount_uv: 0,
-        pending_amount_uv: 0,
-        available_balance_uv: 0,
       };
 
       const txnTotals = txnTotalsRes.rows[0] || {
@@ -848,9 +740,6 @@ exports.listAllTransactionsForSuperAdmin = async (req, res) => {
         total_credits: 0,
         total_debits: 0,
         net_amount: 0,
-        total_credits_uv: 0,
-        total_debits_uv: 0,
-        net_amount_uv: 0,
       };
 
       return res.json({

@@ -3,6 +3,8 @@ const {
   sendPlacedOrderEmail,
   sendOrderStatusUpdateEmail,
 } = require("./email/placeOrderEmail");
+const SelfCommission = require("../services/commission/SelfCommission");
+const distributeParentChainCommission = require("../services/commission/ParentChainCommission");
 
 // const generateOrderId = () => {
 //   const now = new Date();
@@ -600,6 +602,490 @@ const getShippingCharge = async (client) => {
 //     client.release();
 //   }
 // };
+
+exports.placeDistributorOrder = async (req, res) => {
+  const client = await db.connect();
+  try {
+    await client.query("BEGIN");
+
+    const distributorUserId = req.user.id;
+    const {
+      items,
+      shipping_address,
+      coupon_code,
+      payment_method = "wallet",
+    } = req.body;
+
+    if (!items || !Array.isArray(items) || items.length === 0) {
+      throw new Error("Items required");
+    }
+
+    const distUser = await client.query(
+      `SELECT id, username, full_name, email, phone, kyc_status, is_active
+       FROM users WHERE id = $1 FOR UPDATE`,
+      [distributorUserId],
+    );
+    if (distUser.rows.length === 0) {
+      throw new Error("Distributor account not found");
+    }
+    const distributor = distUser.rows[0];
+    if (!distributor.kyc_status) {
+      await client.query("ROLLBACK");
+      return res.status(400).json({
+        success: false,
+        message: "KYC not approved. Please complete KYC verification before ordering.",
+      });
+    }
+
+    const customerName = distributor.full_name || `Distributor ${distributor.username}`;
+    const customerEmail = distributor.email;
+
+    const targetDistributorId = 0;
+    let subTotal = 0;
+    let totalTax = 0;
+    let totalBV = 0;
+    const validatedItems = [];
+
+    for (const item of items) {
+      const { product_id, variation_id, quantity: qty } = item;
+
+      let productData;
+
+      if (variation_id) {
+        const variantRes = await client.query(
+          `SELECT pv.sku, pv.price, pv.bv_point, pv.stock, p.name as product_name,
+              p.f_image as product_image,
+              t.tax_percentage as tax_rate,
+              jsonb_build_object(
+                'id', t.id, 'name', t.tax_name, 'percentage', t.tax_percentage
+              ) as tax_info,
+              COALESCE((
+                SELECT jsonb_agg(
+                  jsonb_build_object(
+                    'attr_id', av.attr_id,
+                    'attr_value_id', vam.attr_value_id,
+                    'value', av.value
+                  ) ORDER BY av.attr_id
+                )
+                FROM variant_attr_mapping vam
+                JOIN attr_values av ON vam.attr_value_id = av.id
+                WHERE vam.variant_id = pv.id
+              ), '[]'::jsonb) as attributes
+              FROM pro_variants pv
+              JOIN products p ON pv.product_id = p.id
+              LEFT JOIN tax_settings t ON t.id = p.tax_id
+              WHERE pv.id = $1 AND p.id = $2 AND p.status = 'active'`,
+          [variation_id, product_id],
+        );
+        productData = variantRes.rows[0];
+      } else {
+        const productRes = await client.query(
+          `SELECT
+            p.id::text as sku,
+            t.tax_percentage as tax_rate,
+            CASE
+              WHEN p.discounted_price > 0 THEN p.discounted_price
+              ELSE p.base_price
+            END as price,
+            null as stock,
+            p.name as product_name,
+            p.f_image as product_image,
+            '[]'::jsonb as attributes,
+            jsonb_build_object(
+              'id', t.id, 'name', t.tax_name, 'percentage', t.tax_percentage
+            ) as tax_info
+          FROM products p
+          LEFT JOIN tax_settings t ON t.id = p.tax_id
+          WHERE p.id = $1 AND p.status = 'active'`,
+          [product_id],
+        );
+        productData = productRes.rows[0];
+      }
+
+      if (!productData) {
+        throw new Error(
+          `Product/Variant reference matching ID ${product_id} is not active.`,
+        );
+      }
+
+      const taxRate = parseFloat(productData.tax_rate || 0);
+      const taxInfoObj = productData.tax_info;
+
+      const invRes = await client.query(
+        `SELECT distributor_id, quantity FROM distributor_inventory
+         WHERE product_id = $1 AND (variant_id = $2 OR (variant_id IS NULL AND $2 IS NULL))
+         AND (distributor_id = $3 OR distributor_id = 0)
+         ORDER BY (distributor_id = $3) DESC`,
+        [product_id, variation_id || null, targetDistributorId],
+      );
+
+      let specificDistStock = invRes.rows.find(
+        (r) => r.distributor_id == targetDistributorId,
+      );
+      let mainWarehouseStock = invRes.rows.find((r) => r.distributor_id == 0);
+
+      let finalStockSource = null;
+
+      if (specificDistStock && specificDistStock.quantity >= qty) {
+        finalStockSource = targetDistributorId;
+      } else if (mainWarehouseStock && mainWarehouseStock.quantity >= qty) {
+        finalStockSource = 0;
+      } else {
+        throw new Error(`Insufficient stock for ${productData.product_name}.`);
+      }
+
+      const price = parseFloat(productData.price);
+      const itemTax = ((price * taxRate) / 100) * qty;
+      const itemTotal = price * qty;
+      const unitBV = parseFloat(productData.bv_point) || 0;
+      const itemBV = unitBV * qty;
+
+      validatedItems.push({
+        product_id,
+        variant_id: variation_id || null,
+        variant_details: {
+          price: productData.price,
+          bv_point: productData.bv_point,
+          tax_data: taxInfoObj,
+          attributes: productData.attributes || [],
+        },
+        qty,
+        unit_price: price,
+        unit_bv_points: unitBV,
+        total_item_price: itemTotal,
+        total_item_bv: itemBV,
+        stock_source: finalStockSource,
+        product_name: productData.product_name,
+        product_image: productData.product_image,
+        item_tax: itemTax,
+      });
+
+      subTotal += itemTotal;
+      totalTax += itemTax;
+      totalBV += itemBV;
+    }
+
+    let shippingCharges = 0;
+    if (subTotal <= 260) {
+      const sc = await getShippingCharge(client);
+      shippingCharges = Number(sc) || 0;
+    }
+
+    const taxAmount = Math.round(totalTax * 100) / 100;
+    const couponBaseTotalAmount = subTotal + taxAmount + shippingCharges;
+
+    let discountAmount = 0;
+    let finalTotalAmount = couponBaseTotalAmount;
+
+    if (coupon_code) {
+      const couponCodeNormalized = String(coupon_code).trim().toUpperCase();
+
+      const couponProducts = items.map((it) => it.product_id).filter(Boolean);
+
+      const couponResult = await client.query(
+        `SELECT * FROM coupons
+         WHERE code = $1 AND status = 'active' AND used_count < usage_limit`,
+        [couponCodeNormalized],
+      );
+
+      if (couponResult.rows.length === 0) {
+        throw new Error("Invalid or inactive coupon");
+      }
+
+      const coupon = couponResult.rows[0];
+      const now = new Date();
+      if (coupon.valid_from && new Date(coupon.valid_from) > now) {
+        throw new Error("Coupon not yet valid");
+      }
+      if (coupon.expires_at && new Date(coupon.expires_at) < now) {
+        throw new Error("Coupon expired");
+      }
+      if (
+        parseFloat(couponBaseTotalAmount) < parseFloat(coupon.min_order_amount)
+      ) {
+        throw new Error(`Minimum order ${coupon.min_order_amount} required`);
+      }
+      if (coupon.applicable_products && coupon.applicable_products.length > 0) {
+        const productIds = couponProducts.map((p) => parseInt(p));
+        const invalid = coupon.applicable_products.some(
+          (id) => !productIds.includes(id),
+        );
+        if (invalid) {
+          throw new Error("Coupon not applicable to these products");
+        }
+      }
+      if (coupon.applicable_users && coupon.applicable_users.length > 0) {
+        if (!coupon.applicable_users.includes(parseInt(distributorUserId))) {
+          throw new Error("Coupon not applicable to this user");
+        }
+      }
+      const usageCheck = await client.query(
+        `SELECT 1 FROM coupon_usages
+         WHERE coupon_id = $1
+         AND (user_id = $2 OR username = $3 OR phone = $4 OR ip_address = $5)`,
+        [coupon.id, parseInt(distributorUserId), null, null, null],
+      );
+      if (usageCheck.rows.length > 0) {
+        throw new Error("Coupon already used by this user");
+      }
+
+      if (coupon.discount_type === "percentage") {
+        discountAmount =
+          (parseFloat(coupon.discount_amount) / 100) *
+          parseFloat(couponBaseTotalAmount);
+      } else {
+        discountAmount = parseFloat(coupon.discount_amount);
+      }
+      if (coupon.max_discount_amount) {
+        discountAmount = Math.min(
+          discountAmount,
+          parseFloat(coupon.max_discount_amount),
+        );
+      }
+      discountAmount = parseFloat(discountAmount.toFixed(2));
+      finalTotalAmount = couponBaseTotalAmount - discountAmount;
+      if (finalTotalAmount < 0) finalTotalAmount = 0;
+
+      await client.query(
+        `UPDATE coupons SET used_count = used_count + 1 WHERE id = $1`,
+        [coupon.id],
+      );
+      await client.query(
+        `INSERT INTO coupon_usages
+          (coupon_id, user_id, username, phone, ip_address, user_agent)
+         VALUES ($1, $2, $3, $4, $5, $6)`,
+        [coupon.id, parseInt(distributorUserId), null, null, null, null],
+      );
+    }
+
+    const totalAmount = finalTotalAmount;
+
+    if (parseFloat(totalAmount) < 700) {
+      throw new Error(
+        "Minimum order value is ₹700 to qualify for commission activation.",
+      );
+    }
+
+    await client.query(
+      `INSERT INTO wallets
+        (user_id, total_amount, pending_amount, left_count, right_count, paid_pairs, company_fund, withdrawable_amount)
+       VALUES ($1, 0, 0, 0, 0, 0, 0, 0)
+       ON CONFLICT (user_id) DO NOTHING`,
+      [distributorUserId],
+    );
+
+    const orderRef = generateOrderId();
+    const orderInsert = await client.query(
+      `INSERT INTO orders (order_id, user_id, distributor_id, sub_total,
+        tax_amount, shipping_charges, total_amount, total_bv_points, shipping_address,
+        payment_method, order_status, order_for,
+        mlm_source_user_id, mlm_eligible, mlm_order_type)
+       VALUES ($1, NULL, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'admin', $11, TRUE, 'distributor_self_purchase')
+       RETURNING *`,
+      [
+        orderRef,
+        targetDistributorId,
+        subTotal,
+        taxAmount,
+        shippingCharges,
+        totalAmount,
+        totalBV,
+        shipping_address,
+        payment_method,
+        payment_method === "wallet" ? "confirmed" : "pending",
+        distributorUserId,
+      ],
+    );
+    const newOrderResult = orderInsert.rows[0];
+    const dbOrderId = newOrderResult.id;
+
+    for (const item of validatedItems) {
+      await client.query(
+        `INSERT INTO order_items (
+          order_id, product_id, variant_id, product_name,
+          variant_details, qty, unit_price, unit_bv_points,
+          total_item_price, total_item_bv, stock_source, product_image
+         )
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
+        [
+          dbOrderId,
+          item.product_id,
+          item.variant_id,
+          item.product_name,
+          item.variant_details,
+          item.qty,
+          item.unit_price,
+          item.unit_bv_points,
+          item.total_item_price,
+          item.total_item_bv,
+          item.stock_source,
+          item.product_image,
+        ],
+      );
+
+      const deductRes = await client.query(
+        `UPDATE distributor_inventory
+         SET quantity = quantity - $1, updated_at = CURRENT_TIMESTAMP
+         WHERE product_id = $2 AND (variant_id = $3 OR (variant_id IS NULL AND $3 IS NULL))
+         AND distributor_id = $4 RETURNING quantity`,
+        [item.qty, item.product_id, item.variant_id, item.stock_source],
+      );
+
+      if (deductRes.rowCount === 0) {
+        throw new Error(`Inventory update failed for ${item.product_name}`);
+      }
+    }
+
+    const levelCommRes = await client.query(
+      `SELECT commission_percentage FROM level_commissions WHERE level_no = 0`,
+    );
+    const selfRate = Number(levelCommRes.rows[0]?.commission_percentage || 0);
+    const selfCommission = Number((totalAmount * selfRate / 100).toFixed(2));
+    let selfTxnId = null;
+
+    if (selfCommission > 0) {
+      const selfTxn = await client.query(
+        `INSERT INTO transactions
+          (user_id, amount, type, category, source_user_id, order_id, status, remarks, user_package_id)
+         VALUES ($1, $2, 'credit', 'commission_self', $1, $3, 'pending', $4, NULL)
+         RETURNING id`,
+        [
+          distributorUserId,
+          selfCommission,
+          dbOrderId,
+          `Self purchase cashback (${selfRate}%) on order ${orderRef}`,
+        ],
+      );
+      selfTxnId = selfTxn.rows[0].id;
+
+      await client.query(
+        `INSERT INTO mlm_commission_events
+          (order_id, user_package_id, source_user_id, beneficiary_user_id,
+           commission_type, generation_level, base_amount, commission_percent,
+           commission_amount, plan_settings_id, status, transaction_id,
+           mlm_order_type, is_self_commission)
+         VALUES ($1, NULL, $2, $3, 'self_cashback', 0, $4, $5, $6,
+           (SELECT id FROM mlm_plan_settings WHERE is_active = TRUE ORDER BY effective_from DESC LIMIT 1),
+           'pending', $7, 'distributor_self_purchase', TRUE)`,
+        [
+          dbOrderId,
+          distributorUserId,
+          distributorUserId,
+          totalAmount,
+          selfRate,
+          selfCommission,
+          selfTxnId,
+        ],
+      );
+
+      await client.query(
+        `UPDATE wallets
+         SET pending_amount = COALESCE(pending_amount, 0) + $1,
+             updated_at = CURRENT_TIMESTAMP
+         WHERE user_id = $2`,
+        [selfCommission, distributorUserId],
+      );
+    }
+
+    const existingQualifying = await client.query(
+      `SELECT COUNT(*) as cnt FROM orders
+       WHERE mlm_source_user_id = $1 AND mlm_eligible = TRUE
+         AND order_status IN ('confirmed', 'completed', 'delivered')
+         AND id <> COALESCE($2, 0)`,
+      [distributorUserId, dbOrderId],
+    );
+    if (Number(existingQualifying.rows[0].cnt) === 0) {
+      await client.query(
+        `UPDATE users SET is_active = TRUE WHERE id = $1`,
+        [distributorUserId],
+      );
+    }
+
+    await distributeParentChainCommission(client, {
+      sourceUserId: distributorUserId,
+      orderId: dbOrderId,
+      baseAmount: totalAmount,
+    });
+
+    await client.query("COMMIT");
+
+    const orderPayload = {
+      order_id: orderRef,
+      sakhi_distributor_id: "N/A",
+      transaction_date: "",
+      transaction_description: "Distributor Self Purchase (MLM Eligible)",
+      receipt_no: "",
+      invoice_url: "null",
+      customer_name: customerName,
+      residential_address:
+        (shipping_address?.landmark
+          ? shipping_address.landmark + ", "
+          : "") +
+        [
+          shipping_address?.address_line1,
+          shipping_address?.address_line2,
+          shipping_address?.city,
+          shipping_address?.state,
+          shipping_address?.country,
+          shipping_address?.pincode,
+        ]
+          .filter(Boolean)
+          .join(", "),
+      shipping_address:
+        (shipping_address?.landmark
+          ? shipping_address.landmark + ", "
+          : "") +
+        [
+          shipping_address?.address_line1,
+          shipping_address?.address_line2,
+          shipping_address?.city,
+          shipping_address?.state,
+          shipping_address?.country,
+          shipping_address?.pincode,
+        ]
+          .filter(Boolean)
+          .join(", "),
+      shipping_contact_no: shipping_address?.phone,
+      email_address: customerEmail,
+      shippingCharges: shippingCharges,
+      items: validatedItems.map((item, index) => ({
+        s_no: index + 1,
+        hsn_code: "",
+        name: item.product_name,
+        quantity: item.qty,
+        price: item.unit_price,
+        taxRate: item.variant_details?.tax_data?.percentage || 0,
+        taxAmt: item.item_tax,
+      })),
+    };
+
+    if (customerEmail) {
+      try {
+        await sendPlacedOrderEmail(customerEmail, orderPayload);
+      } catch (mailErr) {
+        console.error("Mail Dispatch Error:", mailErr.message);
+      }
+    }
+
+    res.status(200).json({
+      success: true,
+      message:
+        "Order placed successfully. Self commission created in PENDING status. It will be released after 5 minutes, then upline generation commissions will be distributed.",
+      order_id: orderRef,
+      total_amount: totalAmount,
+      self_commission: selfCommission,
+      self_commission_status: selfCommission > 0 ? "pending" : "not_eligible",
+      activated:
+        Number(existingQualifying.rows[0].cnt) === 0 ? true : null,
+    });
+  } catch (error) {
+    await client.query("ROLLBACK");
+    console.error("Distributor Order Place Error:", error.message);
+    res.status(400).json({ success: false, message: error.message });
+  } finally {
+    client.release();
+  }
+};
 
 exports.placeOrder = async (req, res) => {
   const client = await db.connect();

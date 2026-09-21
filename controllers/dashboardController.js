@@ -753,27 +753,20 @@ exports.getAnalytics = async (req, res) => {
     const id = req.user.id;
 
     const query = `
-      WITH settings AS (
-        SELECT 
-          NULLIF((setting_value->>'uv_value')::numeric, 0) as uv_factor
-        FROM app_settings 
-        WHERE setting_key = 'point_system' 
-        LIMIT 1
-      )
       SELECT
         -- 1. Referral Stats
         (SELECT COUNT(*) FROM users WHERE node_path ~ $1 AND id != $2)::int as total_referrals,
         (SELECT COUNT(*) FROM users WHERE node_path ~ $1 AND is_active = true AND id != $2)::int as active_downline,
-        
-        -- 2. Commission Stats (Dynamic UV Conversion)
+
+        -- 2. Pending Commission Stats
         (
-          SELECT COALESCE(SUM(amount / s.uv_factor), 0)::numeric(12,2)
-          FROM transactions, settings s
+          SELECT COALESCE(SUM(amount), 0)::numeric(12,2)
+          FROM transactions
           WHERE user_id = $2 
             AND category = 'commission' 
             AND type = 'credit' 
             AND status = 'pending'
-        ) as uv_commissions,
+        ) as pending_commissions,
 
         -- 3. Conversion Rate Logic
         (
@@ -784,8 +777,7 @@ exports.getAnalytics = async (req, res) => {
               ELSE '0%' 
             END
           FROM users WHERE node_path ~ $1 AND id != $2
-        ) as conversion_rate
-      FROM settings;
+        ) as conversion_rate;
     `;
 
     // Using node_path logic from your MLM structure
@@ -793,7 +785,7 @@ exports.getAnalytics = async (req, res) => {
     const data = analyticsResult.data?.[0] || {
       total_referrals: 0,
       active_downline: 0,
-      uv_commissions: 0,
+      pending_commissions: 0,
       conversion_rate: "0%",
     };
 
@@ -802,7 +794,7 @@ exports.getAnalytics = async (req, res) => {
       data: {
         total_referrals: parseInt(data.total_referrals),
         active_downline: parseInt(data.active_downline),
-        uv_commissions: parseFloat(data.uv_commissions),
+        pending_commissions: parseFloat(data.pending_commissions),
         conversion_rate: data.conversion_rate,
       },
       message: "Analytics data fetched successfully",
@@ -815,7 +807,7 @@ exports.getAnalytics = async (req, res) => {
       data: {
         total_referrals: 0,
         active_downline: 0,
-        uv_commissions: 0,
+        pending_commissions: 0,
         conversion_rate: "0%",
       },
     });

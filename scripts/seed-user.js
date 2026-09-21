@@ -57,7 +57,7 @@ async function generateUniqueReferralCode(client) {
 
 async function findReferrerByPhone(client, phone) {
   const ref = await client.query(
-    "SELECT id, username, node_path, binary_path FROM users WHERE phone = $1 LIMIT 1 FOR UPDATE",
+    "SELECT id, username FROM users WHERE phone = $1 LIMIT 1 FOR UPDATE",
     [phone],
   );
 
@@ -70,12 +70,12 @@ async function findReferrerByPhone(client, phone) {
 
 async function getOrThrowRoot(client) {
   const root = await client.query(
-    "SELECT id, username, node_path, binary_path FROM users WHERE binary_path = '1' LIMIT 1 FOR UPDATE",
+    "SELECT id, username FROM users ORDER BY id LIMIT 1 FOR UPDATE",
   );
 
   if (root.rows.length === 0) {
     throw new Error(
-      "No root user found (binary_path='1'). Provide --referrerPhone or create root first.",
+      "No root user found. Provide --referrerPhone or create root first.",
     );
   }
 
@@ -84,7 +84,7 @@ async function getOrThrowRoot(client) {
 
 async function createWallet(client, userId) {
   await client.query(
-    "INSERT INTO wallets (user_id, total_amount, left_count, right_count, paid_pairs) VALUES ($1, 0, 0, 0, 0) ON CONFLICT DO NOTHING",
+    "INSERT INTO wallets (user_id, total_amount) VALUES ($1, 0) ON CONFLICT DO NOTHING",
     [userId],
   );
 }
@@ -111,6 +111,18 @@ async function seedUsers() {
       ? await findReferrerByPhone(client, referrerPhone)
       : await getOrThrowRoot(client);
 
+    // Get parent node_path for tree hierarchy
+    const parentNodePath = await client.query(
+      "SELECT node_path FROM users WHERE id = $1",
+      [parent.id],
+    );
+    const parentPath = parentNodePath.rows[0]?.node_path || "root";
+    const childCount = await client.query(
+      "SELECT COUNT(*) FROM users WHERE referrer_id = $1",
+      [parent.id],
+    );
+    const nodePath = `${parentPath}.${parseInt(childCount.rows[0].count) + 1}`;
+
     const salt = await bcrypt.genSalt(10);
     const hashedPassword = await bcrypt.hash(password, salt);
 
@@ -129,28 +141,6 @@ async function seedUsers() {
       );
       if (phoneExists.rows.length > 0) continue;
 
-      // Lock and decide next available position under parent's binary leg
-      const children = await client.query(
-        `SELECT position
-         FROM users
-         WHERE subpath(binary_path, 0, nlevel(binary_path)-1) = $1
-         FOR UPDATE`,
-        [parent.binary_path],
-      );
-
-      const taken = children.rows.map((r) => r.position);
-
-      let position;
-      if (!taken.includes(1)) position = 1;
-      else if (!taken.includes(2)) position = 2;
-      else {
-        throw new Error(
-          "Both legs already filled for the given referrer. Pick another referrer.",
-        );
-      }
-
-      const nodePath = `${parent.node_path}.${username}`;
-      const binaryPath = `${parent.binary_path}.${position}`;
       const referral_code = await generateUniqueReferralCode(client);
 
       const insert = await client.query(
@@ -162,7 +152,7 @@ async function seedUsers() {
           nominee_name, nominee_relationship, nominee_age, nominee_contact, nominee_aadhaar,
           business_level, agreed_to_terms, kyc_status,
           username, password_hash, referrer_id,
-          node_path, binary_path, position, is_active, gstin
+          node_path, is_active, gstin
         ) VALUES (
           $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,
           $13,$14,$15,$16,$17,
@@ -170,8 +160,8 @@ async function seedUsers() {
           $21,$22,$23,$24,$25,
           $26,$27,$28,
           $29,$30,$31,
-          $32,$33,$34,$35, $36
-        ) RETURNING id, username, phone, referral_code, node_path, binary_path, position`,
+          $32,$33,$34,$35
+        ) RETURNING id, username, phone, referral_code`,
         [
           `${fullNamePrefix} ${i + 1}`,
           null,
@@ -207,8 +197,6 @@ async function seedUsers() {
           hashedPassword,
           parent.id,
           nodePath,
-          binaryPath,
-          position,
           false,
           "",
         ],

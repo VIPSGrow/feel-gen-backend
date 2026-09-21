@@ -1,168 +1,126 @@
 const cron = require("node-cron");
 const db = require("../config/db");
-const LevelCommissionDistribution = require("../services/commission/LevelCommission");
-const InitiatorCommission = require("../services/commission/InitiatorCommission");
 
-// Daily cron to release 30-day hold commissions to total_balance
+const HOLDING_MIN_FALLBACK = 5;
+
+async function ensureWalletFor(client, userId) {
+  await client.query(
+    `INSERT INTO wallets (
+      user_id, total_amount, pending_amount,
+      left_count, right_count, paid_pairs, company_fund, withdrawable_amount
+    ) VALUES ($1, 0, 0, 0, 0, 0, 0, 0)
+     ON CONFLICT (user_id) DO NOTHING`,
+    [userId],
+  );
+}
+
+async function releasePendingCommissions(client) {
+  const released = await client.query(
+    `UPDATE mlm_commission_events AS mce
+     SET status = 'completed'
+     FROM transactions AS t
+     CROSS JOIN mlm_plan_settings AS plan
+     WHERE mce.transaction_id = t.id
+       AND plan.id = mce.plan_settings_id
+       AND mce.status = 'pending'
+       AND t.status = 'pending'
+       AND t.created_at
+           + (INTERVAL '1 minute' * COALESCE(plan.holding_period_minutes, $1))
+           <= CURRENT_TIMESTAMP
+     RETURNING
+       mce.id,
+       mce.beneficiary_user_id,
+       mce.commission_amount,
+       mce.transaction_id,
+       mce.is_self_commission,
+       mce.order_id,
+       mce.source_user_id,
+       mce.base_amount,
+       mce.mlm_order_type,
+       mce.plan_settings_id,
+       t.created_at AS txn_created_at`,
+    [HOLDING_MIN_FALLBACK],
+  );
+
+  const planIdFromEvent =
+    released.rows.length > 0 ? released.rows[0].plan_settings_id : null;
+
+  const selfReleaseCandidates = [];
+
+  for (const event of released.rows) {
+    await client.query(
+      `UPDATE transactions
+       SET status = 'completed'
+       WHERE id = $1 AND status = 'pending'`,
+      [event.transaction_id],
+    );
+
+    await ensureWalletFor(client, event.beneficiary_user_id);
+
+    await client.query(
+      `UPDATE wallets
+       SET total_amount = COALESCE(total_amount, 0) + $1,
+           pending_amount = GREATEST(0, COALESCE(pending_amount, 0) - $1),
+           withdrawable_amount = COALESCE(withdrawable_amount, 0) + $1,
+           updated_at = CURRENT_TIMESTAMP
+       WHERE user_id = $2`,
+      [event.commission_amount, event.beneficiary_user_id],
+    );
+
+    if (event.is_self_commission && event.order_id && event.source_user_id) {
+      selfReleaseCandidates.push(event);
+
+      // Activate user if this is their first qualifying order (self commission release)
+      const existingQualifying = await client.query(
+        `SELECT COUNT(*) as cnt FROM orders
+         WHERE mlm_source_user_id = $1 AND mlm_eligible = TRUE
+           AND order_status IN ('confirmed', 'completed', 'delivered')
+           AND id <> $2`,
+        [event.source_user_id, event.order_id],
+      );
+      if (Number(existingQualifying.rows[0].cnt) === 0) {
+        await client.query(`UPDATE users SET is_active = TRUE WHERE id = $1`, [event.source_user_id]);
+      }
+    }
+  }
+
+  return {
+    totalReleased: released.rowCount,
+    selfEvents: selfReleaseCandidates,
+    planSettingsId: planIdFromEvent,
+  };
+}
+
 async function releaseHeldCommissions() {
-  console.log(" ----- Cron Job Started -----");
+  console.log(" ----- [5-Min Pending Release] Cron Job Started -----");
 
-  // Client ko loop ke bahar declare kiya taaki finally block me access ho sake
-  let client;
+  const client = await db.connect();
 
   try {
-    client = await db.connect();
+    await client.query("BEGIN");
 
-    // 1. Fetching pending transactions (Using LIKE with '%' to handle string splitting safely)
-    const query = `
-      SELECT id, user_id, amount, remarks 
-      FROM transactions 
-      WHERE status = 'pending' 
-        AND remarks LIKE 'Self purchase cashback%' 
-        AND created_at <= NOW() - INTERVAL '1 min';
-    `;
+    const step1 = await releasePendingCommissions(client);
 
-    const TransRes = await client.query(query);
+    await client.query("COMMIT");
 
-    if (TransRes.rows.length === 0) {
-      console.log("No pending commissions found to release.");
-      return;
-    }
-
-    const allTransaction = TransRes.rows;
-    console.log(`Found ${allTransaction.length} transactions to process.`);
-    let updateLevel = false;
-
-    for (let tran of allTransaction) {
-      // Safe splitting for order_id
-      const remarkParts = tran.remarks.split(" | ");
-      const order_id = remarkParts[1];
-
-      if (!order_id) {
-        updateLevel = false;
-        console.error(
-          `Skipping Transaction ID ${tran.id}: Order ID not found in remarks.`,
-        );
-        continue;
-      }
-
-      // Start a DB transaction for this specific order to ensure data safety
-      await client.query("BEGIN");
-
-      try {
-        // 2. Fetch order details along with missing fields (payment_method, razorpay_order_id)
-        const ord_query = `
-          SELECT sub_total, payment_method 
-          FROM orders 
-          WHERE order_id = $1 
-            AND order_status NOT IN ('cancelled', 'refunded', 'returned', 'return_requested')
-        `;
-        const ord_res = await client.query(ord_query, [order_id]);
-
-        if (ord_res.rows.length > 0) {
-          const { sub_total, payment_method } = ord_res.rows[0];
-          const tranAmount = parseFloat(tran.amount);
-
-          // 3. Update Transaction Status
-          await client.query(
-            `UPDATE transactions SET status = 'completed' WHERE id = $1`,
-            [tran.id],
-          );
-
-          // 4. FIXED: Update Wallet Amount for the SPECIFIC user_id
-          const pendingWallets = await client.query(
-            `
-            UPDATE wallets 
-            SET 
-              total_amount = total_amount + $1,
-              pending_amount = GREATEST(0, pending_amount - $1),
-              updated_at = CURRENT_TIMESTAMP
-            WHERE user_id = $2
-            RETURNING user_id, total_amount, pending_amount
-            `,
-            [tranAmount, tran.user_id],
-          );
-
-          // self bima booking 1%
-          const bimaBookingAmount = parseFloat(sub_total) * 0.01;
-
-          await client.query(
-            `INSERT INTO transactions (user_id, amount, type, category, source_user_id, status, remarks)
-               VALUES ($1, $2, 'credit', 'other', $3, 'completed', $4)`,
-            [
-              tran.user_id,
-              bimaBookingAmount,
-              tran.user_id,
-              "BIMA Booking Commission",
-            ],
-          );
-
-          // update initiator_user_id comission
-          await InitiatorCommission(client, tran.user_id, {
-            amount: sub_total,
-          });
-
-          // 5. Distribute Level Commission (Passing fetched order details)
-          await LevelCommissionDistribution(client, tran.user_id, {
-            amount: sub_total,
-            paymentMethod: payment_method || "N/A",
-            razorpay_order_id: "N/A",
-            order_id: order_id,
-          });
-
-          // Commit changes for this successful loop iteration
-          await client.query("COMMIT");
-
-          console.log(
-            `Successfully released commission for User ID: ${tran.user_id}, Txn ID: ${tran.id}`,
-          );
-          updateLevel = true;
-        } else {
-          updateLevel = false;
-          // If order is cancelled/refunded, you might want to fail/cancel this transaction
-          console.log(
-            `Order ${order_id} was cancelled/refunded. Skipping commission release.`,
-          );
-          await client.query("ROLLBACK");
-        }
-      } catch (loopError) {
-        updateLevel = false;
-        // Agar kisi ek user ke process me error aaye, toh sirf uska ROLLBACK hoga, baaki chalte rahenge
-        await client.query("ROLLBACK");
-        console.error(`Error processing Transaction ID ${tran.id}:`, loopError);
-      }
-    }
-
-    // update business level
-    // if (updateLevel) {
-    //   console.log("Updating business levels for all users...");
-    //   // Assuming you have a function to update business levels for all users
-    //   const query = `UPDATE users SET business_level = business_level + 1 WHERE id = $1;`;
-    //   await client.query(query, []);
-    //   console.log("Business levels updated successfully.");
-    // }
+    console.log(
+      `[Cron] Step1: Released ${step1.totalReleased} pending commissions` +
+        (step1.selfEvents.length > 0
+          ? ` (${step1.selfEvents.length} self releases)`
+          : ""),
+    );
+    console.log(
+      `[Cron] Next run in 1 minute.`,
+    );
   } catch (error) {
+    await client.query("ROLLBACK");
     console.error("Pending commission cron critical error: ", error);
   } finally {
-    if (client) {
-      client.release(); // 🔥 CRITICAL: Connection wapas pool me bhej diya
-      console.log(" ----- DB Client Released -----");
-    }
-    console.log(" ----- Cron Job Finished -----");
+    client.release();
+    console.log(" ----- [5-Min Pending Release] Cron Job Finished -----");
   }
 }
 
-// Run daily at midnight
-// cron.schedule("0 0 * * *", releaseHeldCommissions);
 cron.schedule("* * * * *", releaseHeldCommissions);
 
-console.log(
-  "\n\n ======  Hold release cron scheduled daily at midnight  ======= ",
-);
-
-// const commResult = await SelfCommission(client, userId, {
-//   amount: subTotal,
-//   paymentMethod: payment_method,
-//   razorpay_order_id,
-//   order_id: orderId,
-// });
+console.log("\n\n ====== Hold release cron scheduled (every min) ====== ");

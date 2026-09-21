@@ -1,5 +1,6 @@
 const db = require("../config/db");
 const SelfCommission = require("../services/commission/SelfCommission");
+const distributeParentChainCommission = require("../services/commission/ParentChainCommission");
 const { generateAndSaveIdCard } = require("../utils/idCardService");
 const { VerifyPaymentFunc } = require("./razorPayController");
 const generateOrderId = () => {
@@ -46,6 +47,18 @@ exports.d_p_o = async (req, res) => {
       return res
         .status(400)
         .json({ success: false, message: "Items required" });
+    }
+
+    // KYC check
+    const userRes = await client.query(
+      `SELECT kyc_status, is_active FROM users WHERE id = $1`,
+      [userId],
+    );
+    if (!userRes.rows[0]?.kyc_status) {
+      return res.status(400).json({
+        success: false,
+        message: "KYC not approved. Please complete KYC verification first.",
+      });
     }
 
     //verify payment if razorpay details are provided (optional for wallet payments)
@@ -230,6 +243,15 @@ exports.d_p_o = async (req, res) => {
 
     const totalAmount = subTotal + taxAmount + shippingCharges - discount;
 
+    // Minimum cart total validation (must be at least 700)
+    const MIN_CART_TOTAL = 700;
+    if (subTotal < MIN_CART_TOTAL) {
+      return res.status(400).json({
+        success: false,
+        message: `Minimum cart total of ₹${MIN_CART_TOTAL} required for distributor purchase`,
+      });
+    }
+
     // 7. Create order
     const orderId = generateOrderId();
 
@@ -261,8 +283,12 @@ exports.d_p_o = async (req, res) => {
     }
 
     const newOrder = await client.query(
-      `INSERT INTO orders (order_id, distributor_id, sub_total, tax_amount, shipping_charges, total_amount, total_bv_points, shipping_address, payment_method, order_for, payment_status)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'admin-distributor', $10) RETURNING *`,
+      `INSERT INTO orders (order_id, user_id, distributor_id, sub_total,
+        tax_amount, shipping_charges, total_amount, total_bv_points, shipping_address,
+        payment_method, order_status, order_for,
+        mlm_source_user_id, mlm_eligible, mlm_order_type)
+       VALUES ($1, NULL, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'admin-distributor', $11, TRUE, 'distributor_self_purchase')
+       RETURNING *`,
       [
         orderId,
         userId,
@@ -273,9 +299,12 @@ exports.d_p_o = async (req, res) => {
         totalBV,
         shipping_address,
         payment_method,
-        paymentStatus,
+        payment_method === "wallet" ? "confirmed" : "pending",
+        userId,
       ],
     );
+    const dbOrderId = newOrder.rows[0].id;
+
 
     // 8. Create order_items
     for (const item of validatedItems) {
@@ -283,7 +312,7 @@ exports.d_p_o = async (req, res) => {
         `INSERT INTO order_items (order_id, product_id, variant_id, product_name, product_image, variant_sku, variant_details, qty, unit_price, unit_bv_points, total_item_price, total_item_bv)
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
         [
-          newOrder.rows[0].id,
+          dbOrderId,
           item.product_id,
           item.variant_id,
           item.product_name,
@@ -304,8 +333,15 @@ exports.d_p_o = async (req, res) => {
       paymentMethod: payment_method,
       razorpay_order_id,
       order_id: orderId,
+      orderDbId: dbOrderId,
     });
     if (!commResult.status) throw new Error(commResult.message);
+
+    await distributeParentChainCommission(client, {
+      sourceUserId: userId,
+      orderId: dbOrderId,
+      baseAmount: subTotal,
+    });
 
     // 9. Auto-increase distributor inventory
     for (const item of validatedItems) {
