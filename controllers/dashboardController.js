@@ -35,9 +35,9 @@ exports.getUserDashboardData = async (req, res) => {
     const walletBalance = await safeQuery(
       `
       SELECT 
-        (COALESCE(total_amount, 0) / 10.0) as total_balance,        
-        (COALESCE(pending_amount, 0) / 10.0) as pending_balance,        
-        ((COALESCE(total_amount, 0) + COALESCE(pending_amount, 0)) / 10.0) as available_balance
+        COALESCE(total_amount, 0) as total_balance,
+        COALESCE(pending_amount, 0) as pending_balance,
+        (COALESCE(total_amount, 0) + COALESCE(total_amount, 0)) as available_balance
       FROM wallets
       WHERE user_id = $1
       `,
@@ -88,7 +88,7 @@ exports.getUserDashboardData = async (req, res) => {
     const transactionStats = await safeQuery(
       `
       SELECT
-        COALESCE(SUM(amount) FILTER (WHERE category = 'commission' AND type = 'credit'), 0)::numeric(15,2) as total_commissions,
+        COALESCE(SUM(amount) FILTER (WHERE (category = 'commission' OR category = 'commission_level') AND type = 'credit'), 0)::numeric(15,2) as total_commissions,
         COALESCE(SUM(amount) FILTER (WHERE category = 'withdraw' AND type = 'debit'), 0)::numeric(15,2) as total_withdrawals,
         COALESCE(SUM(amount) FILTER (WHERE category = 'purchase' AND type = 'debit'), 0)::numeric(15,2) as total_purchases,
         COALESCE(SUM(amount) FILTER (WHERE category = 'ref_bonus' AND type = 'credit'), 0)::numeric(15,2) as total_ref_bonuses,

@@ -50,18 +50,20 @@ const distributeParentChainCommission = async (
        SELECT
          $1::INTEGER AS user_id,
          u.referrer_id,
-         -1::INTEGER AS generation
+         -1::INTEGER AS generation,
+         u.referral_code AS source_referral_code
        FROM users u WHERE u.id = $1
        UNION ALL
        SELECT
          r.id AS user_id,
          r.referrer_id,
-         up.generation + 1 AS generation
+         up.generation + 1 AS generation,
+         up.source_referral_code
        FROM upline up
        JOIN users r ON r.id = up.referrer_id
        WHERE up.generation + 1 < $2
      )
-     SELECT DISTINCT user_id AS beneficiary_user_id, generation
+     SELECT DISTINCT user_id AS beneficiary_user_id, generation, source_referral_code
      FROM upline
      WHERE generation >= 0 AND generation < $2
      ORDER BY generation ASC`,
@@ -69,6 +71,7 @@ const distributeParentChainCommission = async (
   );
 
   if (uplineRes.rows.length === 0) return { inserted: 0 };
+  const sourceReferralCode = uplineRes.rows[0].source_referral_code || sourceUserId;
 
   const genCfgRows = await client.query(
     `SELECT level_no, commission_percent
@@ -138,8 +141,8 @@ const distributeParentChainCommission = async (
         orderId,
         isPending ? "pending" : "completed",
         generation === 0
-          ? `Direct partner commission (${rate}%) from user ${sourceUserId} order`
-          : `Generation Level ${generation} (${rate}%) from user ${sourceUserId} order`,
+          ? `Direct partner commission (${rate}%) from user ${sourceReferralCode} order`
+          : `Generation Level ${generation} (${rate}%) from user ${sourceReferralCode} order`,
       ],
     );
     const txnId = txn.rows[0].id;

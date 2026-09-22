@@ -37,7 +37,7 @@ router.get("/mlm-plan", adminPlanAccess, getPlan);
 router.put("/mlm-plan", adminPlanAccess, updatePlan);
 router.put("/mlm-plan/commissions/:level", adminPlanAccess, updateCommission);
 router.put("/mlm-plan/ranks/:id", adminPlanAccess, updateRank);
-router.get("/mlm-plan/rewards", adminPlanAccess, getRewards);
+router.get("/mlm-plan/rewards",  getRewards);
 router.get("/mlm-plan/rewards/:id", adminPlanAccess, getReward);
 router.post("/mlm-plan/rewards", adminPlanAccess, createReward);
 router.put("/mlm-plan/rewards/:id", adminPlanAccess, updateReward);
