@@ -401,9 +401,149 @@ exports.createLevelCommission = async (req, res) => {
 exports.updateLevelCommission = async (req, res) => {
   try {
     const { level_id } = req.params;
+    const { type, commission_percentage, level_name } = req.body;
+    const percentage = Number(commission_percentage);
+
+    if (type === "direct_partner") {
+      if (!Number.isFinite(percentage) || percentage < 0 || percentage > 100) {
+        return res.status(400).json({
+          success: false,
+          message: "commission_percentage must be between 0 and 100",
+        });
+      }
+
+      const planRes = await db.query(
+        `UPDATE mlm_plan_settings
+         SET direct_partner_commission_percent = $1,
+             updated_at = CURRENT_TIMESTAMP
+         WHERE id = (
+           SELECT id
+           FROM mlm_plan_settings
+           WHERE is_active = TRUE
+           ORDER BY effective_from DESC
+           LIMIT 1
+         )
+         RETURNING *`,
+        [percentage],
+      );
+
+      if (planRes.rowCount === 0) {
+        return res.status(404).json({
+          success: false,
+          message: "Active MLM plan not found",
+        });
+      }
+
+      return res.status(200).json({
+        success: true,
+        message: "Direct partner commission updated successfully",
+        data: {
+          level_no: 0,
+          type,
+          level_name: level_name || "Direct Partner",
+          commission_percentage: Number(
+            planRes.rows[0].direct_partner_commission_percent,
+          ),
+        },
+      });
+    }
+
+    if (type === "self_cashback") {
+      if (!Number.isFinite(percentage) || percentage < 0 || percentage > 100) {
+        return res.status(400).json({
+          success: false,
+          message: "commission_percentage must be between 0 and 100",
+        });
+      }
+
+      const selfRes = await db.query(
+        `UPDATE level_commissions
+         SET commission_percentage = $1,
+             level_name = COALESCE($2, level_name)
+         WHERE level_no = 0
+         RETURNING *`,
+        [percentage, level_name],
+      );
+
+      if (selfRes.rowCount === 0) {
+        return res.status(404).json({
+          success: false,
+          message: "Self cashback commission not found",
+        });
+      }
+
+      return res.status(200).json({
+        success: true,
+        message: "Self cashback commission updated successfully",
+        data: {
+          level_no: 0,
+          type,
+          level_name: selfRes.rows[0].level_name,
+          commission_percentage: Number(
+            selfRes.rows[0].commission_percentage,
+          ),
+        },
+      });
+    }
+
+    if (type === "generation") {
+      const levelNo = Number(level_id);
+
+      if (!Number.isInteger(levelNo) || levelNo < 1 || levelNo > 7) {
+        return res.status(400).json({
+          success: false,
+          message: "Generation level must be between 1 and 7",
+        });
+      }
+
+      if (!Number.isFinite(percentage) || percentage < 0 || percentage > 100) {
+        return res.status(400).json({
+          success: false,
+          message: "commission_percentage must be between 0 and 100",
+        });
+      }
+
+      const planRes = await db.query(
+        `SELECT id
+         FROM mlm_plan_settings
+         WHERE is_active = TRUE
+         ORDER BY effective_from DESC
+         LIMIT 1`,
+      );
+      const planId = planRes.rows[0]?.id;
+
+      if (!planId) {
+        return res.status(404).json({
+          success: false,
+          message: "Active MLM plan not found",
+        });
+      }
+
+      const generationRes = await db.query(
+        `UPDATE mlm_generation_commissions
+         SET commission_percent = $1,
+             level_name = COALESCE($2, level_name),
+             updated_at = CURRENT_TIMESTAMP
+         WHERE plan_settings_id = $3 AND level_no = $4
+         RETURNING *`,
+        [percentage, level_name, planId, levelNo],
+      );
+
+      if (generationRes.rowCount === 0) {
+        return res.status(404).json({
+          success: false,
+          message: "Generation commission not found",
+        });
+      }
+
+      return res.status(200).json({
+        success: true,
+        message: "Level commission updated successfully",
+        data: generationRes.rows[0],
+      });
+    }
+
     const {
-      commission_percentage,
-      level_name,
       team_size,
       ir_direct,
       bima,

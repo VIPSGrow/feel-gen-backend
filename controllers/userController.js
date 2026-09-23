@@ -147,6 +147,19 @@ exports.getMyTree = async (req, res) => {
       `SELECT 
         u.id, u.username, u.email, u.phone, u.full_name, u.node_path, 
         u.referrer_id, u.referral_code, u.created_at, u.is_active, u.kyc_status,
+        COALESCE(r.rank_name, 'Distributor') AS level_name,
+        COALESCE((
+          SELECT SUM(mce.commission_amount)
+          FROM mlm_commission_events mce
+          WHERE mce.beneficiary_user_id = u.id
+            AND mce.status = 'completed'
+        ), 0) AS commission_earned,
+        COALESCE((
+          SELECT SUM(mce.commission_amount)
+          FROM mlm_commission_events mce
+          WHERE mce.beneficiary_user_id = u.id
+            AND mce.status <> 'cancelled'
+        ), 0) AS total_commission,
         -- Total number of descendants under this user (team size)
         (
           SELECT COUNT(*) 
@@ -156,7 +169,6 @@ exports.getMyTree = async (req, res) => {
         -- Match the highest level from level_commissions whose team_size threshold
         -- is less than or equal to this user's team size
         lc.level_no,
-        lc.level_name,
         lc.commission_percentage,
         -- Create a JSON object for referrer if it exists
         CASE 
@@ -171,6 +183,7 @@ exports.getMyTree = async (req, res) => {
         END as referrer
        FROM users u
        LEFT JOIN users p ON u.referrer_id = p.id
+      LEFT JOIN mlm_ranks r ON r.id = u.current_rank_id AND r.is_active = TRUE
        LEFT JOIN LATERAL (
          SELECT lc.level_no, lc.level_name, lc.commission_percentage
          FROM level_commissions lc
@@ -230,6 +243,19 @@ exports.getMyTreeById = async (req, res) => {
       `SELECT 
         u.id, u.username, u.email, u.phone, u.full_name, u.node_path, 
         u.referrer_id, u.referral_code, u.created_at, u.is_active, u.kyc_status,
+        COALESCE(r.rank_name, 'Distributor') AS level_name,
+        COALESCE((
+          SELECT SUM(mce.commission_amount)
+          FROM mlm_commission_events mce
+          WHERE mce.beneficiary_user_id = u.id
+            AND mce.status = 'completed'
+        ), 0) AS commission_earned,
+        COALESCE((
+          SELECT SUM(mce.commission_amount)
+          FROM mlm_commission_events mce
+          WHERE mce.beneficiary_user_id = u.id
+            AND mce.status <> 'cancelled'
+        ), 0) AS total_commission,
         -- Total number of descendants under this user (team size)
         (
           SELECT COUNT(*) 
@@ -239,7 +265,6 @@ exports.getMyTreeById = async (req, res) => {
         -- Match the highest level from level_commissions whose team_size threshold
         -- is less than or equal to this user's team size
         lc.level_no,
-        lc.level_name,
         lc.commission_percentage,
         -- Create a JSON object for referrer if it exists
         CASE 
@@ -254,6 +279,7 @@ exports.getMyTreeById = async (req, res) => {
         END as referrer
        FROM users u
        LEFT JOIN users p ON u.referrer_id = p.id
+      LEFT JOIN mlm_ranks r ON r.id = u.current_rank_id AND r.is_active = TRUE
        LEFT JOIN LATERAL (
          SELECT lc.level_no, lc.level_name, lc.commission_percentage
          FROM level_commissions lc

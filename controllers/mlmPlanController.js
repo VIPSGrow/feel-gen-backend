@@ -35,7 +35,10 @@ exports.getPlan = async (req, res) => {
         [planId],
       ),
       db.query(
-        "SELECT * FROM mlm_ranks WHERE plan_settings_id = $1 ORDER BY rank_no",
+        `SELECT id, rank_name, milestone_threshold, threshold_type
+         FROM mlm_ranks
+         WHERE plan_settings_id = $1 AND is_active = TRUE
+         ORDER BY rank_no ASC`,
         [planId],
       ),
       db.query(
