@@ -123,8 +123,11 @@ exports.exportTdsReportExcel = async (req, res) => {
         t.amount,
         t.category,
         t.type,
-        t.remarks
+        t.remarks,
+        u.pan_no,
+        u.full_name
       FROM transactions t
+      LEFT JOIN users u ON t.user_id = u.id
       WHERE 1=1
         AND t.user_id = $${dateParams.length + 1}
         AND t.category = 'withdraw'
@@ -145,6 +148,8 @@ exports.exportTdsReportExcel = async (req, res) => {
       { header: "Transaction ID", key: "id", width: 18 },
       { header: "Date", key: "created_at", width: 15 },
       { header: "User ID", key: "user_id", width: 12 },
+      { header: "Pan No.", key: "pan_no", width: 45 },
+      { header: "Name", key: "full_name", width: 45 },
       { header: "Amount", key: "amount", width: 15 },
       { header: "Category", key: "category", width: 12 },
       { header: "Type", key: "type", width: 10 },

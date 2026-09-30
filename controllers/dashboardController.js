@@ -37,7 +37,7 @@ exports.getUserDashboardData = async (req, res) => {
       SELECT 
         COALESCE(total_amount, 0) as total_balance,
         COALESCE(pending_amount, 0) as pending_balance,
-        (COALESCE(total_amount, 0) + COALESCE(total_amount, 0)) as available_balance
+        (COALESCE(withdrawable_amount, 0)) as available_balance
       FROM wallets
       WHERE user_id = $1
       `,

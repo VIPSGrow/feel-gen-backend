@@ -17,11 +17,14 @@ const orAuth = async (req, res, next) => {
     // 2. Verify JWT
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
 
+    // console.log("Decoded JWT:", decoded);
     // 3. Determine User Type and Table
     // We check decoded.type (from ecomAuth) or decoded.role (from your second middleware)
     let userQuery = "";
 
-    if (bearerToken) {
+
+    if (bearerToken && (decoded.role && decoded.role !== "Super Admin")) {
+      console.log("Decoded JWT for bearer token:", decoded);
       userQuery =
         "SELECT id, name, email, phone, status FROM ecom_user WHERE id = $1";
 
@@ -41,6 +44,9 @@ const orAuth = async (req, res, next) => {
 
       req.user = { ...userObj, type: "ECOM_USER", role: "ECOM_USER" }; // Attach user info and type to request
     } else {
+
+
+      console.log("Decoded JWT for non-bearer token:", decoded);
       if (decoded.kyc_status !== true) {
         return res
           .status(202)
