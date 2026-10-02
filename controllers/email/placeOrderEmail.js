@@ -1,6 +1,7 @@
 // const nodemailer = require("nodemailer");
 const emailTemplates = require("./EmailTemplate.json");
 const { transporter } = require("../../utils/otpService");
+const crypto = require("crypto");
 // const transporter = nodemailer.createTransport({
 //   host: process.env.EMAIL_HOST,
 //   port: Number(process.env.EMAIL_PORT || 587),
@@ -76,11 +77,9 @@ function generateHtmlItemList(items, shippingCharge) {
 
       return `
       <tr>
-        <td style="padding: 8px 4px; border: 1px solid #e2e8f0; text-align: center;">${
-          item.s_no
+        <td style="padding: 8px 4px; border: 1px solid #e2e8f0; text-align: center;">${item.s_no
         }</td>
-        <td style="padding: 8px 6px; border: 1px solid #e2e8f0; font-weight: 500; color: #1e293b;">${
-          item.name
+        <td style="padding: 8px 6px; border: 1px solid #e2e8f0; font-weight: 500; color: #1e293b;">${item.name
         }</td>
         <td style="padding: 8px 4px; border: 1px solid #e2e8f0; text-align: center; color: #475569;">${hsn}</td>
         <td style="padding: 8px 4px; border: 1px solid #e2e8f0; text-align: center;">${qty}</td>
@@ -112,11 +111,11 @@ function generateHtmlItemList(items, shippingCharge) {
       <td style="padding: 8px 6px; border: 1px solid #e2e8f0; color: #475569;" colspan="2">Shipping & Handling Charges</td>
       <td style="padding: 8px 4px; border: 1px solid #e2e8f0; text-align: center; color: #64748b;">1</td>
       <td style="padding: 8px 6px; border: 1px solid #e2e8f0; text-align: right; color: #475569;">₹${shipping.toFixed(
-        2,
-      )}</td>
+    2,
+  )}</td>
       <td style="padding: 8px 6px; border: 1px solid #e2e8f0; text-align: right; color: #475569;">₹${shipping.toFixed(
-        2,
-      )}</td>
+    2,
+  )}</td>
       <td style="padding: 8px 4px; border: 1px solid #e2e8f0; text-align: center; color: #94a3b8;">nil</td>
       <td style="padding: 8px 6px; border: 1px solid #e2e8f0; text-align: right; color: #94a3b8;">₹0.00</td>
       <td style="padding: 8px 4px; border: 1px solid #e2e8f0; text-align: center; color: #94a3b8;">nil</td>
@@ -163,16 +162,16 @@ function generateHtmlItemList(items, shippingCharge) {
           <td style="padding: 8px 4px; border: 1px solid #cbd5e1; text-align: center;">${totalQty}</td>
           <td style="padding: 8px 6px; border: 1px solid #cbd5e1;">&nbsp;</td>
           <td style="padding: 8px 6px; border: 1px solid #cbd5e1; text-align: right;">₹${overallGrandTotal.toFixed(
-            2,
-          )}</td>
+    2,
+  )}</td>
           <td style="padding: 8px 4px; border: 1px solid #cbd5e1;">&nbsp;</td>
           <td style="padding: 8px 6px; border: 1px solid #cbd5e1; text-align: right;">₹${totalCGST.toFixed(
-            2,
-          )}</td>
+    2,
+  )}</td>
           <td style="padding: 8px 4px; border: 1px solid #cbd5e1;">&nbsp;</td>
           <td style="padding: 8px 6px; border: 1px solid #cbd5e1; text-align: right;">₹${totalSGST.toFixed(
-            2,
-          )}</td>
+    2,
+  )}</td>
           <td style="padding: 8px 4px; border: 1px solid #cbd5e1;">&nbsp;</td>
           <td style="padding: 8px 6px; border: 1px solid #cbd5e1; text-align: right;">₹0.00</td>
         </tr>
@@ -187,8 +186,8 @@ function generateHtmlItemList(items, shippingCharge) {
         <td style=\"padding: 10px 12px; width: 35%; text-align: right; vertical-align: middle; background-color: #f8fafc;\">
           <strong style=\"color: #475569; font-size: 11px; text-transform: uppercase;\">Invoice Total:</strong><br>
           <span style=\"font-size: 18px; color: #00A9E0; font-weight: 800; display: inline-block; margin-top: 2px;\">₹${overallGrandTotal.toFixed(
-            2,
-          )}</span>
+    2,
+  )}</span>
         </td>
       </tr>
     </table>
@@ -296,7 +295,27 @@ function compileOrderEmail(orderData, templateKey = "order_placed") {
   );
   const plainTextItems = generatePlainTextItems(items);
 
-  const invoiceUrl = `https://feelsafeco.in/account/orders`;
+
+
+  const orderId = String(orderData.order_id);
+  const expires = Date.now() + 7 * 24 * 60 * 60 * 1000; // 7 days from now
+
+  // Sign the payload: orderId + expires
+  const dataToSign = `${orderId}:${expires}`;
+  const signature = crypto
+    .createHmac("sha256", process.env.URL_SIGN_SECRET)
+    .update(dataToSign)
+    .digest("hex");
+
+  // Compact URL with expiry and signature
+  const invoiceUrl = `https://feelsafeco.in/account/orders/${orderId}?exp=${expires}&sig=${signature}`;
+
+  console.log(
+    " \n\n =============== \n\n Compiling invoice url of order:",
+    invoiceUrl
+  );
+
+  // const invoiceUrl = `https://feelsafeco.in/account/orders`;
   // const invoiceUrl = `https://feelsafeco.in/account/orders/${orderData.order_id}`;
 
   const templateVariables = {
