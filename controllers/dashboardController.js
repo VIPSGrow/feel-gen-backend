@@ -1,4 +1,5 @@
 const db = require("../config/db");
+const { getStatus: getQualificationStatus } = require("../services/qualification/QualificationService");
 
 // Helper to safely run a query and return default on error
 const safeQuery = async (query, params = [], defaultValue = null) => {
@@ -196,10 +197,18 @@ exports.getUserDashboardData = async (req, res) => {
       [],
     );
 
+    let qualification = null;
+    try {
+      qualification = await getQualificationStatus(userId);
+    } catch (e) {
+      console.error("Dashboard qualification error:", e.message);
+    }
+
     // ─── COMBINE ALL DATA ───
     return res.json({
       success: true,
       data: {
+        qualification,
         profile: userProfile.data?.[0] || {},
         wallet: walletBalance.data?.[0] || {},
         orders: orderStats.data?.[0] || {},

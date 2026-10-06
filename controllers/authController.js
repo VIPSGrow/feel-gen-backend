@@ -3,6 +3,7 @@ const bcrypt = require("bcrypt");
 const jwt = require("jsonwebtoken");
 const crypto = require("crypto");
 const otpService = require("../utils/otpService");
+const { getStatus: getQualificationStatus } = require("../services/qualification/QualificationService");
 const evaluateAndUpgradeRank = require("../services/commission/RankUpgrade");
 
 // exports.register = async (req, res) => {
@@ -152,12 +153,31 @@ exports.register = async (req, res) => {
       nodePath = "root";
     }
 
+    const initialRankRes = await client.query(
+      `SELECT r.id
+       FROM mlm_ranks r
+       JOIN mlm_plan_settings p ON p.id = r.plan_settings_id
+       WHERE p.is_active = TRUE
+         AND p.effective_from <= CURRENT_TIMESTAMP
+         AND (p.effective_to IS NULL OR p.effective_to > CURRENT_TIMESTAMP)
+         AND r.rank_no = 0
+         AND r.is_active = TRUE
+       ORDER BY p.effective_from DESC
+       LIMIT 1`,
+    );
+
+    if (initialRankRes.rows.length === 0) {
+      throw new Error("Initial rank (rank_no 0) not found for the active MLM plan");
+    }
+
+    const initialRankId = initialRankRes.rows[0].id;
+
     const newUser = await client.query(
       `INSERT INTO users
           (username, email, phone, password_hash, referrer_id, referral_code,
            referrer_name, referrer_contact, node_path, is_active, kyc_status,
-           business_level, agreed_to_terms)
-          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+           business_level, agreed_to_terms, current_rank_id)
+          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
           RETURNING *`,
       [
         username,
@@ -173,6 +193,7 @@ exports.register = async (req, res) => {
         false,
         0,
         false,
+        initialRankId,
       ],
     );
 
@@ -482,9 +503,17 @@ exports.login = async (req, res) => {
     // Also remove sensitive data before sending to frontend
     const { password_hash, transaction_pin_hash, ...safeUser } = user;
 
+    let qualification = null;
+    try {
+      qualification = await getQualificationStatus(user.id);
+    } catch (e) {
+      console.error("Qualification status error:", e.message);
+    }
+
     const userWithPic = {
       ...safeUser,
       profile_pic: profile.rows[0]?.file_url || null,
+      qualification,
     };
 
     const token = jwt.sign(
@@ -550,9 +579,17 @@ exports.getUserById = async (req, res) => {
     // Also remove sensitive data before sending to frontend
     const { password_hash, transaction_pin_hash, ...safeUser } = user;
 
+    let qualification = null;
+    try {
+      qualification = await getQualificationStatus(user.id);
+    } catch (e) {
+      console.error("Qualification status error:", e.message);
+    }
+
     const userWithPic = {
       ...safeUser,
       profile_pic: profile.rows[0]?.file_url || null,
+      qualification,
     };
 
     res.json({

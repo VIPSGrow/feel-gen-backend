@@ -4,6 +4,7 @@ const {
   sendOrderStatusUpdateEmail,
 } = require("./email/placeOrderEmail");
 const SelfCommission = require("../services/commission/SelfCommission");
+const { recordPurchase: recordQualificationPurchase } = require("../services/qualification/QualificationService");
 const distributeParentChainCommission = require("../services/commission/ParentChainCommission");
 
 // const generateOrderId = () => {
@@ -1005,6 +1006,11 @@ exports.placeDistributorOrder = async (req, res) => {
       sourceUserId: distributorUserId,
       orderId: dbOrderId,
       baseAmount: totalAmount,
+    });
+
+    await recordQualificationPurchase(client, {
+      buyerId: distributorUserId,
+      orderId: dbOrderId,
     });
 
     await client.query("COMMIT");

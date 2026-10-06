@@ -17,6 +17,16 @@ router.get("/all", [auth, isSuperAdmin], userController.getAllUsers);
 router.get("/by_id/:user_id", getUserById);
 router.get("/downline", auth, userController.getMyDownline);
 router.put("/downline/:id", [auth, isSuperAdmin], userController.updateMember);
+router.get("/me/qualification", auth, async (req, res) => {
+  try {
+    const status = await require("../services/qualification/QualificationService").getStatus(req.user.id);
+    if (!status) return res.status(404).json({ success: false, message: "User not found" });
+    res.json({ success: true, data: status });
+  } catch (err) {
+    console.error("Qualification status error:", err.message);
+    res.status(500).json({ success: false, message: "Server error" });
+  }
+});
 router.get("/tree", auth, userController.getMyTree);
 router.get("/tree-by-id/:id", [auth], userController.getMyTreeById);
 

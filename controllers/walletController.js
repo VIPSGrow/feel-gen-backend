@@ -56,6 +56,8 @@ exports.getHistory = async (req, res) => {
         t.user_id,
         t.type, t.category, t.status, t.remarks, t.created_at,
         u.username as other_user,
+        u.full_name,
+        u.phone,
         o.order_id
       FROM transactions t
       LEFT JOIN users u ON t.source_user_id = u.id OR (t.user_id != $1 AND t.source_user_id = u.id)

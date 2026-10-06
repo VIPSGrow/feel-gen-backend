@@ -1,3 +1,4 @@
+const { QUALIFICATION_SELECT_SQL } = require("../services/qualification/QualificationService");
 const db = require("../config/db");
 const bcrypt = require("bcrypt");
 const crypto = require("crypto");
@@ -144,10 +145,29 @@ exports.getMyTree = async (req, res) => {
     // By using <@ (is descendant) and including the user's own path,
     // we get the full subtree in one go.
     const result = await db.query(
-      `SELECT 
+      `WITH RECURSIVE active_plan AS (
+         SELECT id
+         FROM mlm_plan_settings
+         WHERE is_active = TRUE
+           AND effective_from <= CURRENT_TIMESTAMP
+           AND (effective_to IS NULL OR effective_to > CURRENT_TIMESTAMP)
+         ORDER BY effective_from DESC
+         LIMIT 1
+       ),
+       downline AS (
+         SELECT id, 0 AS depth
+         FROM users
+         WHERE id = $1
+         UNION ALL
+         SELECT c.id, d.depth + 1
+         FROM users c
+         JOIN downline d ON c.referrer_id = d.id
+       )
+       SELECT 
         u.id, u.username, u.email, u.phone, u.full_name, u.node_path, 
         u.referrer_id, u.referral_code, u.created_at, u.is_active, u.kyc_status,
-        COALESCE(r.rank_name, 'Distributor') AS level_name,
+        ${QUALIFICATION_SELECT_SQL},
+        COALESCE(r.rank_name, gc.level_name, 'Distributor') AS rank_name,
         COALESCE((
           SELECT SUM(mce.commission_amount)
           FROM mlm_commission_events mce
@@ -162,14 +182,15 @@ exports.getMyTree = async (req, res) => {
         ), 0) AS total_commission,
         -- Total number of descendants under this user (team size)
         (
-          SELECT COUNT(*) 
-          FROM users sub 
-          WHERE sub.node_path <@ u.node_path AND sub.id != u.id
+          WITH RECURSIVE sub AS (
+            SELECT s.id FROM users s WHERE s.referrer_id = u.id
+            UNION ALL
+            SELECT s.id FROM users s JOIN sub ON s.referrer_id = sub.id
+          )
+          SELECT COUNT(*) FROM sub
         )::int as team_size,
-        -- Match the highest level from level_commissions whose team_size threshold
-        -- is less than or equal to this user's team size
-        lc.level_no,
-        lc.commission_percentage,
+        COALESCE(r.rank_no, gc.level_no) AS level_no,
+        gc.commission_percent AS commission_percentage,
         -- Create a JSON object for referrer if it exists
         CASE 
           WHEN p.id IS NOT NULL THEN 
@@ -181,21 +202,19 @@ exports.getMyTree = async (req, res) => {
               )
           ELSE NULL 
         END as referrer
-       FROM users u
+       FROM downline d
+       JOIN users u ON u.id = d.id
        LEFT JOIN users p ON u.referrer_id = p.id
-      LEFT JOIN mlm_ranks r ON r.id = u.current_rank_id AND r.is_active = TRUE
+       LEFT JOIN mlm_ranks r ON r.id = u.current_rank_id AND r.is_active = TRUE
        LEFT JOIN LATERAL (
-         SELECT lc.level_no, lc.level_name, lc.commission_percentage
-         FROM level_commissions lc
-         WHERE lc.team_size <= (
-           SELECT COUNT(*) 
-           FROM users sub 
-           WHERE sub.node_path <@ u.node_path AND sub.id != u.id
-         )
-         ORDER BY lc.level_no DESC
+         SELECT gc.level_no, gc.level_name, gc.commission_percent
+         FROM mlm_generation_commissions gc
+         WHERE gc.plan_settings_id = (SELECT id FROM active_plan)
+           AND gc.is_active = TRUE
+           AND gc.level_no = d.depth
+         ORDER BY gc.level_no
          LIMIT 1
-       ) lc ON true
-       WHERE u.node_path <@ (SELECT node_path FROM users WHERE id = $1)::ltree`,
+       ) gc ON r.rank_no IS NULL`,
       [userId],
     );
 
@@ -208,7 +227,7 @@ exports.getMyTree = async (req, res) => {
     // 2. Helper function to build the tree
     const buildTree = (data, rootId) => {
       return data
-        .filter((item) => item.referrer_id === rootId)
+        .filter((item) => String(item.referrer_id) === String(rootId))
         .map((item) => ({
           ...item,
           children: buildTree(data, item.id),
@@ -216,7 +235,7 @@ exports.getMyTree = async (req, res) => {
     };
 
     // 3. Find the "Top Parent" object (the logged-in user)
-    const topUser = flatData.find((u) => u.id === userId);
+    const topUser = flatData.find((u) => String(u.id) === String(userId));
 
     // 4. Build children for the top user and return as a single object (or array)
     const tree = {
@@ -240,10 +259,20 @@ exports.getMyTreeById = async (req, res) => {
     // By using <@ (is descendant) and including the user's own path,
     // we get the full subtree in one go.
     const result = await db.query(
-      `SELECT 
+      `WITH active_plan AS (
+         SELECT id
+         FROM mlm_plan_settings
+         WHERE is_active = TRUE
+           AND effective_from <= CURRENT_TIMESTAMP
+           AND (effective_to IS NULL OR effective_to > CURRENT_TIMESTAMP)
+         ORDER BY effective_from DESC
+         LIMIT 1
+       )
+       SELECT 
         u.id, u.username, u.email, u.phone, u.full_name, u.node_path, 
         u.referrer_id, u.referral_code, u.created_at, u.is_active, u.kyc_status,
-        COALESCE(r.rank_name, 'Distributor') AS level_name,
+        ${QUALIFICATION_SELECT_SQL},
+        COALESCE(r.rank_name, gc.level_name, 'Distributor') AS rank_name,
         COALESCE((
           SELECT SUM(mce.commission_amount)
           FROM mlm_commission_events mce
@@ -262,10 +291,8 @@ exports.getMyTreeById = async (req, res) => {
           FROM users sub 
           WHERE sub.node_path <@ u.node_path AND sub.id != u.id
         )::int as team_size,
-        -- Match the highest level from level_commissions whose team_size threshold
-        -- is less than or equal to this user's team size
-        lc.level_no,
-        lc.commission_percentage,
+        COALESCE(r.rank_no, gc.level_no) AS level_no,
+        gc.commission_percent AS commission_percentage,
         -- Create a JSON object for referrer if it exists
         CASE 
           WHEN p.id IS NOT NULL THEN 
@@ -279,18 +306,18 @@ exports.getMyTreeById = async (req, res) => {
         END as referrer
        FROM users u
        LEFT JOIN users p ON u.referrer_id = p.id
-      LEFT JOIN mlm_ranks r ON r.id = u.current_rank_id AND r.is_active = TRUE
+       LEFT JOIN mlm_ranks r ON r.id = u.current_rank_id AND r.is_active = TRUE
        LEFT JOIN LATERAL (
-         SELECT lc.level_no, lc.level_name, lc.commission_percentage
-         FROM level_commissions lc
-         WHERE lc.team_size <= (
-           SELECT COUNT(*) 
-           FROM users sub 
-           WHERE sub.node_path <@ u.node_path AND sub.id != u.id
-         )
-         ORDER BY lc.level_no DESC
+         SELECT gc.level_no, gc.level_name, gc.commission_percent
+         FROM mlm_generation_commissions gc
+         WHERE gc.plan_settings_id = (SELECT id FROM active_plan)
+           AND gc.is_active = TRUE
+           AND gc.level_no = nlevel(u.node_path) - nlevel(
+             (SELECT node_path FROM users WHERE id = $1)::ltree
+           )
+         ORDER BY gc.level_no
          LIMIT 1
-       ) lc ON true
+       ) gc ON r.rank_no IS NULL
        WHERE u.node_path <@ (SELECT node_path FROM users WHERE id = $1)::ltree`,
       [userId],
     );
@@ -838,6 +865,25 @@ exports.createUser = async (req, res) => {
       node_path = "root";
     }
 
+    const initialRankRes = await client.query(
+      `SELECT r.id
+       FROM mlm_ranks r
+       JOIN mlm_plan_settings p ON p.id = r.plan_settings_id
+       WHERE p.is_active = TRUE
+         AND p.effective_from <= CURRENT_TIMESTAMP
+         AND (p.effective_to IS NULL OR p.effective_to > CURRENT_TIMESTAMP)
+         AND r.rank_no = 0
+         AND r.is_active = TRUE
+       ORDER BY p.effective_from DESC
+       LIMIT 1`,
+    );
+
+    if (initialRankRes.rows.length === 0) {
+      throw new Error("Initial rank (rank_no 0) not found for the active MLM plan");
+    }
+
+    const initialRankId = initialRankRes.rows[0].id;
+
     // 🔥 FINAL INSERT
     const newUser = await client.query(
       `INSERT INTO users (
@@ -847,7 +893,7 @@ exports.createUser = async (req, res) => {
         referral_code, referrer_name, referrer_contact,
         nominee_name, nominee_relationship, nominee_age, nominee_contact, nominee_aadhaar,
         business_level, agreed_to_terms, kyc_status,
-        username, password_hash, referrer_id,
+        username, password_hash, referrer_id, current_rank_id,
         node_path, is_active, gstin, profile_pic, initiator_user_id
        ) VALUES (
       $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,
@@ -855,8 +901,8 @@ exports.createUser = async (req, res) => {
       $18,$19,$20,
       $21,$22,$23,$24,$25,
       $26,$27,$28,
-      $29,$30,$31,
-      $32,$33,$34,$35,$36
+      $29,$30,$31,$32,
+      $33,$34,$35,$36,$37
       ) RETURNING *`,
       [
         full_name || null,
@@ -890,6 +936,7 @@ exports.createUser = async (req, res) => {
         username,
         hashedPassword,
         referrer_id || null,
+        initialRankId,
         node_path,
         false,
         gst_no || "",

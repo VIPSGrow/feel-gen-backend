@@ -1,3 +1,4 @@
+const { recordPurchase: recordQualificationPurchase } = require("../services/qualification/QualificationService");
 const db = require("../config/db");
 const SelfCommission = require("../services/commission/SelfCommission");
 const distributeParentChainCommission = require("../services/commission/ParentChainCommission");
@@ -342,6 +343,8 @@ exports.d_p_o = async (req, res) => {
       orderId: dbOrderId,
       baseAmount: subTotal,
     });
+
+    await recordQualificationPurchase(client, { buyerId: userId, orderId: dbOrderId });
 
     // 9. Auto-increase distributor inventory
     for (const item of validatedItems) {

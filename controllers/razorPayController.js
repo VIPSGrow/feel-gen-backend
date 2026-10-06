@@ -252,6 +252,10 @@ exports.razorpayWebhook = async (req, res) => {
               `paymentId : ${paymentId} | orderId : ${orderId}`,
             ],
           );
+          // Idempotent; never throws, so webhook retries are safe.
+          await require("../services/qualification/QualificationService").recordPurchaseForOrderRef(
+            myCustomDbOrderId,
+          );
           console.log(
             `✅ [DB SUCCESS] Order ${myCustomDbOrderId} successfully marked as paid.`,
           );

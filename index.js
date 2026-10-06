@@ -104,6 +104,7 @@ app.post("/api/upload", async (req, res) => {
 // Auto-init wallet for new users, seed commissions, cron - handled in scripts
 require("./utils/releaseHoldCron");
 require("./utils/monthlyTdsCron");
+require("./utils/qualificationCycleCron");
 
 // Run seed if needed (one-time)
 
