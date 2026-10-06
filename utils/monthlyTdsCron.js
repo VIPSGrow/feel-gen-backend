@@ -1,7 +1,6 @@
 const cron = require("node-cron");
 const db = require("../config/db");
-let cronWakeUpCount = 0;
-const FORCED_TEST_MODE = true;
+
 
 
 // function getLastDayRangeUTC() {
@@ -26,21 +25,24 @@ const FORCED_TEST_MODE = true;
 function getLastDayRangeUTC() {
   const now = new Date();
   const year = now.getUTCFullYear();
-  const month = now.getUTCMonth(); // 31 July को month = 6 (July)
+  const month = now.getUTCMonth();
 
-  // Current Month (1st of July)
-  const from = new Date(Date.UTC(year, month, 1, 0, 0, 0));
-
-  // Next Month (1st of August - Exclusive)
-  const nextMonth = month === 11 ? 0 : month + 1;
-  const nextYear = month === 11 ? year + 1 : year;
-  const toExclusive = new Date(Date.UTC(nextYear, nextMonth, 1, 0, 0, 0));
-
-  // DisplayTo: 31 July रात 23:59:59
+  // Settles the month that just ended (cron runs on the 1st at 00:05 UTC).
+  const toExclusive = new Date(Date.UTC(year, month, 1, 0, 0, 0));
+  const prevMonth = month === 0 ? 11 : month - 1;
+  const prevYear = month === 0 ? year - 1 : year;
+  const from = new Date(Date.UTC(prevYear, prevMonth, 1, 0, 0, 0));
   const displayTo = new Date(toExclusive.getTime() - 1000);
 
-  return { from, toExclusive, displayTo, currentYear: year, currentMonth: month };
+  return { from, toExclusive, displayTo, prevYear, prevMonth };
 }
+
+const TAXABLE_CATEGORIES = [
+  "commission",
+  "commission_self",
+  "commission_level",
+  "rank_reward",
+];
 
 async function getTdsPercent(client) {
   const res = await client.query(
@@ -90,31 +92,27 @@ async function processMonthlyTds() {
       ${prevYear}-${String(prevMonth + 1).padStart(2, "0")}
     `.trim();
 
-    const existing = await client.query(
-      "SELECT 1 FROM monthly_tds_cycles WHERE cycle_key = $1",
-      [cycleKey],
+    await client.query("BEGIN");
+
+    // Claim the cycle first: concurrent/duplicate runs get no row and exit,
+    // and a failure rolls the claim back together with all wallet changes.
+    const claim = await client.query(
+      "INSERT INTO monthly_tds_cycles (cycle_key, from_date, to_date_exclusive) VALUES ($1,$2,$3) ON CONFLICT (cycle_key) DO NOTHING RETURNING cycle_key",
+      [cycleKey, from.toISOString(), displayTo.toISOString()],
     );
-
-    console.log("\nSelect Key created...", existing.rows[0]);
-
-    if (existing.rows.length) {
+    if (!claim.rows.length) {
+      await client.query("ROLLBACK");
       console.log(`[monthlyTdsCron] Cycle already processed: ${cycleKey}`);
       return;
     }
-
-    await client.query("BEGIN");
 
     console.log("\nFetching TDS Percentage...");
 
     const tdsPercent = await getTdsPercent(client);
 
-    // TODO (must align with your actual commission transaction format):
-    // Here we assume commission credited transactions are:
-    //   transactions.category = 'commission'
-    //   transactions.type = 'credit'
-    // and they represent amounts eligible for TDS.
-    //
-    // If your schema differs, adjust this query.
+    // Taxable income = completed credit transactions of these categories:
+    //   commission (direct/initiator/milestone), commission_self,
+    //   commission_level (generation), rank_reward.
     const commissionsByUser = await client.query(
       `
       SELECT
@@ -122,14 +120,14 @@ async function processMonthlyTds() {
         COALESCE(SUM(t.amount), 0)::numeric(18,2) AS commission_total
       FROM transactions t
       WHERE t.type = 'credit'
-        AND t.category = 'commission'
+        AND t.category = ANY($3::text[])
         AND t.created_at >= $1
         AND t.created_at < $2
-        AND (t.status IS NULL OR t.status = 'completed' OR t.status = 'approved')
+        AND t.status = 'completed'
       GROUP BY t.user_id
       HAVING COALESCE(SUM(t.amount), 0) > 0
       `,
-      [from.toISOString(), toExclusive.toISOString()],
+      [from.toISOString(), toExclusive.toISOString(), TAXABLE_CATEGORIES],
     );
 
     console.log(
@@ -147,8 +145,6 @@ async function processMonthlyTds() {
       const tdsAmount = Number(
         (commissionTotal * (tdsPercent / 100)).toFixed(2),
       );
-      const withdrawable = Number((commissionTotal - tdsAmount).toFixed(2));
-      if (withdrawable < 0) continue;
 
       // Strategy:
       // Move wallet to withdrawable by ensuring total_amount is decreased by TDS for this month’s eligible commission.
@@ -161,10 +157,11 @@ async function processMonthlyTds() {
 
       if (tdsAmount > 0) {
         // Wallet deduction (TDS)
-        await client.query(
-          "UPDATE wallets SET total_amount = total_amount - $1, withdrawable_amount = $2, updated_at = CURRENT_TIMESTAMP WHERE user_id = $3",
-          [tdsAmount, withdrawable, userId],
+        const walletUpd = await client.query(
+          "UPDATE wallets SET total_amount = total_amount - $1, withdrawable_amount = GREATEST(0, COALESCE(withdrawable_amount, 0) - $1), updated_at = CURRENT_TIMESTAMP WHERE user_id = $2",
+          [tdsAmount, userId],
         );
+        if (walletUpd.rowCount === 0) continue;
 
         console.log(`\nWallet Updated... transaction inserting `);
         // Audit transaction: TDS Deduction
@@ -188,15 +185,9 @@ async function processMonthlyTds() {
       // For now, we only apply the TDS portion.
 
       console.log(
-        `[monthlyTdsCron] user=${userId} commission=${commissionTotal} tds=${tdsAmount} withdrawable=${withdrawable}`,
+        `[monthlyTdsCron] user=${userId} commission=${commissionTotal} tds=${tdsAmount}`,
       );
     }
-
-    console.log("\ntable Inserting in cylcle...");
-    await client.query(
-      "INSERT INTO monthly_tds_cycles (cycle_key, from_date, to_date_exclusive) VALUES ($1,$2,$3)",
-      [cycleKey, from.toISOString(), displayTo.toISOString()],
-    );
 
     await client.query("COMMIT");
   } catch (err) {
@@ -209,43 +200,12 @@ async function processMonthlyTds() {
   }
 }
 
-// Run on last day of month at 00:05 UTC.
-// node-cron doesn't natively support "last day" across all cases, so we run daily and guard.
+// Runs on the 1st of every month at 00:05 UTC and deducts TDS for the month that just ended.
 cron.schedule("5 0 1 * *", async () => {
-  cronWakeUpCount++;
-  console.log(
-    `\n⏱️  [Heartbeat Counter: ${cronWakeUpCount}] Node-cron task executing at: ${new Date().toISOString()}`,
-  );
-
-  const now = new Date();
-  const day = now.getUTCDate();
-  const month = now.getUTCMonth();
-  const year = now.getUTCFullYear();
-
-  const lastDay = new Date(Date.UTC(year, month + 1, 0)).getUTCDate();
-
-  if (FORCED_TEST_MODE) {
-    console.log(
-      "🛠️  [Test Flag Active] Bypassing date restrictions to run calculations instantly...",
-    );
-  } else if (day !== lastDay) {
-    console.log(
-      `⏳ [Idle State] Today (${day}) is not the last day of the month (${lastDay}). Exiting lifecycle execution...`,
-    );
-    return;
-  }
-
-  console.log(
-    `⏳ [Day check] Today (${day}) is not the last day of the month (${lastDay}). Exiting lifecycle execution...`,
-  );
-
-  if (day !== lastDay) return;
-  console.log(
-    "⏰ Cron heartbeat captured matching trigger schedule pattern...",
-  );
+  console.log(`[monthlyTdsCron] running at ${new Date().toISOString()}`);
   await processMonthlyTds();
 });
 
-console.log(
-  "[monthlyTdsCron] scheduled daily; processes only on last day of month.",
-);
+console.log("[monthlyTdsCron] scheduled: 1st of every month 00:05 UTC (settles previous month).");
+
+module.exports = { processMonthlyTds };
