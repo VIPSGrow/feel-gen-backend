@@ -16,10 +16,10 @@ async function seedAdminData() {
         address, city, state, pin,
         bank_name, account_holder_name, account_no, ifsc_code, branch,
         referral_code, referrer_name, referrer_contact,
-        nominee_name, nominee_relationship, nominee_age, nominee_contact, nominee_aadhaar,
+        nominee_name, nominee_relationship, nominee_age, nominee_contact, nominee_aadhar,
         business_level, agreed_to_terms, kyc_status,
         username, password_hash, referrer_id,
-        is_active, role
+        is_active, role, current_rank_id, node_path
       ) VALUES (
         $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,
         $13,$14,$15,$16,$17,
@@ -27,8 +27,8 @@ async function seedAdminData() {
         $21,$22,$23,$24,$25,
         $26,$27,$28,
         $29,$30,$31,
-        $32, $33
-      ) ON CONFLICT (phone) DO NOTHING RETURNING id`, // Added RETURNING id here
+        $32, $33, $34, $35
+      ) ON CONFLICT (phone) DO NOTHING RETURNING id`,
       [
         "Super Admin",
         null,
@@ -52,17 +52,19 @@ async function seedAdminData() {
         null,
         null,
         null,
+        null,
+        null,
+        null,
         18,
         null,
-        null,
-        0,
-        true,
         true,
         username,
         hashedPassword,
         null,
         true,
         "Super Admin",
+        1,
+        "root",
       ],
     );
 

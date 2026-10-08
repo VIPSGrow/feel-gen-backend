@@ -92,9 +92,9 @@ async function createWallet(client, userId) {
 async function seedUsers() {
   const count = parseInt(getArgValue("--count", "1"), 10);
   const password = getArgValue("--password", "12345678");
-  const referrerPhone = getArgValue("--referrerPhone", "9999999912");
-  const startingPhone = getArgValue("--startingPhone", "9999999122");
-  const fullNamePrefix = getArgValue("--fullNamePrefix", "User 122");
+  const referrerPhone = getArgValue("--referrerPhone", "8130124630");
+  const startingPhone = getArgValue("--startingPhone", "9999999992");
+  const fullNamePrefix = getArgValue("--fullNamePrefix", "User 2");
   const skipQr = hasFlag("--skipQr"); // currently unused (QR generation is intentionally not done for speed)
 
   if (!Number.isFinite(count) || count <= 0) {
@@ -160,7 +160,7 @@ async function seedUsers() {
           $21,$22,$23,$24,$25,
           $26,$27,$28,
           $29,$30,$31,
-          $32,$33,$34,$35
+          $32,$33,$34
         ) RETURNING id, username, phone, referral_code`,
         [
           `${fullNamePrefix} ${i + 1}`,

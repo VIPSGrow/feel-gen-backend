@@ -26,18 +26,33 @@ exports.getAllUsers = async (req, res) => {
 };
 exports.getDownline = async (req, res) => {
   try {
-    // We get the logged-in user's path from the request (sent by middleware)
-    const userPath = req.user.node_path;
+    const userResult = await db.query(
+      "SELECT node_path FROM users WHERE id = $1",
+      [req.user.id],
+    );
 
-    // Query: Find everyone whose path starts with the current user's path
-    // The <@ operator in ltree means "is a descendant of"
+    if (userResult.rows.length === 0) {
+      return res.status(404).json({ error: "User not found" });
+    }
+
+    const userPath = userResult.rows[0].node_path;
+
+    if (!userPath) {
+      return res.status(400).json({
+        success: false,
+        message:
+          "Your node_path is not set. This can happen if your account was created before the tree structure was enabled. Please contact support.",
+      });
+    }
+
     const downline = await db.query(
-      "SELECT id, username, role, node_path, name, referrer_id FROM users WHERE node_path <@ $1 AND node_path != $1",
-      [userPath],
+      "SELECT id, username, role, node_path, name, referrer_id FROM users WHERE node_path <@ $1::ltree AND node_path != $1::ltree",
+      [userPath, userPath],
     );
 
     res.json(downline.rows);
   } catch (err) {
+    console.error(err);
     res.status(500).send("Server Error");
   }
 };
@@ -106,6 +121,14 @@ exports.getMyDownline = async (req, res) => {
     }
 
     const myPath = userResult.rows[0].node_path;
+
+    if (!myPath) {
+      return res.status(400).json({
+        success: false,
+        message:
+          "Your node_path is not set. This can happen if your account was created before the tree structure was enabled. Please contact support.",
+      });
+    }
 
     const downline = await db.query(
       `SELECT 

@@ -6,6 +6,7 @@ const {
 const SelfCommission = require("../services/commission/SelfCommission");
 const { recordPurchase: recordQualificationPurchase } = require("../services/qualification/QualificationService");
 const distributeParentChainCommission = require("../services/commission/ParentChainCommission");
+const { VerifyPaymentFunc } = require("./razorPayController");
 
 // const generateOrderId = () => {
 //   const now = new Date();
@@ -614,7 +615,11 @@ exports.placeDistributorOrder = async (req, res) => {
       items,
       shipping_address,
       coupon_code,
-      payment_method = "wallet",
+      payment_method = "wallet", // "wallet" | "razorpay" | "split"
+      razorpay_order_id,
+      razorpay_payment_id,
+      razorpay_signature,
+      payments, // [{ method, amount, razorpay_order_id, razorpay_payment_id, razorpay_signature }] - for split payment
     } = req.body;
 
     if (!items || !Array.isArray(items) || items.length === 0) {
@@ -876,12 +881,134 @@ exports.placeDistributorOrder = async (req, res) => {
     );
 
     const orderRef = generateOrderId();
+
+    // --- Unified Payment Processing: supports wallet, razorpay, and split ---
+
+    let paymentsToProcess = [];
+
+    if (payment_method === "split") {
+      if (!Array.isArray(payments) || payments.length === 0) {
+        throw new Error("Split payment requires a non-empty payments array");
+      }
+
+      const sumOfPayments = payments.reduce(
+        (sum, p) => sum + parseFloat(p.amount || 0),
+        0,
+      );
+
+      if (Math.abs(sumOfPayments - totalAmount) > 0.01) {
+        throw new Error(
+          `Split payment total (₹${sumOfPayments.toFixed(2)}) does not match order total (₹${totalAmount.toFixed(2)})`,
+        );
+      }
+
+      paymentsToProcess = payments.map((p) => ({
+        method: p.method,
+        methodAmount: parseFloat(p.amount),
+        razorpay_order_id: p.razorpay_order_id,
+        razorpay_payment_id: p.razorpay_payment_id,
+        razorpay_signature: p.razorpay_signature,
+      }));
+    } else {
+      paymentsToProcess = [
+        {
+          method: payment_method,
+          methodAmount: totalAmount,
+          razorpay_order_id,
+          razorpay_payment_id,
+          razorpay_signature,
+        },
+      ];
+    }
+
+    let paidAmount = 0;
+    const paymentRecordEntries = [];
+
+    for (const payment of paymentsToProcess) {
+      if (payment.method === "wallet") {
+        const walletRes = await client.query(
+          `SELECT total_amount FROM wallets WHERE user_id = $1 FOR UPDATE`,
+          [distributorUserId],
+        );
+
+        const currentTotal = parseFloat(walletRes.rows[0]?.total_amount || 0);
+        if (currentTotal < payment.methodAmount) {
+          throw new Error(
+            `Insufficient wallet balance for this purchase (wallet: ₹${currentTotal.toFixed(2)}, required: ₹${payment.methodAmount.toFixed(2)})`,
+          );
+        }
+
+        await client.query(
+          `UPDATE wallets SET total_amount = total_amount - $1, updated_at = CURRENT_TIMESTAMP WHERE user_id = $2`,
+          [payment.methodAmount, distributorUserId],
+        );
+
+        await client.query(
+          `INSERT INTO transactions (user_id, amount, type, category, status, remarks)
+           VALUES ($1, $2, 'debit', 'purchase', 'completed', $3)`,
+          [distributorUserId, payment.methodAmount, `Order Purchase: ${orderRef}`],
+        );
+
+        paidAmount += payment.methodAmount;
+      } else if (payment.method === "razorpay") {
+        if (
+          !payment.razorpay_order_id ||
+          !payment.razorpay_payment_id ||
+          !payment.razorpay_signature
+        ) {
+          throw new Error(
+            "Razorpay payment details (order_id, payment_id, signature) required for razorpay method",
+          );
+        }
+
+        const verifyResult = await VerifyPaymentFunc(
+          payment.razorpay_order_id,
+          payment.razorpay_payment_id,
+          payment.razorpay_signature,
+        );
+
+        if (!verifyResult) {
+          throw new Error("Invalid Razorpay signature");
+        }
+
+        paidAmount += payment.methodAmount;
+      } else {
+        throw new Error(`Unsupported payment method: ${payment.method}`);
+      }
+
+      paymentRecordEntries.push({
+        method: payment.method,
+        amount: payment.methodAmount,
+        transaction_id:
+          payment.method === "razorpay" ? payment.razorpay_payment_id : null,
+        payment_details:
+          payment.method === "razorpay"
+            ? {
+                razorpay_order_id: payment.razorpay_order_id,
+                razorpay_payment_id: payment.razorpay_payment_id,
+                razorpay_signature: payment.razorpay_signature,
+              }
+            : null,
+      });
+    }
+
+    let paymentStatus;
+    if (paidAmount >= totalAmount - 0.01) {
+      paymentStatus = "paid";
+    } else if (paidAmount > 0) {
+      paymentStatus = "partially_paid";
+    } else {
+      paymentStatus = "unpaid";
+    }
+
+    const orderStatus = paymentStatus === "paid" ? "confirmed" : "pending";
+
     const orderInsert = await client.query(
       `INSERT INTO orders (order_id, user_id, distributor_id, sub_total,
         tax_amount, shipping_charges, total_amount, total_bv_points, shipping_address,
-        payment_method, order_status, order_for,
+        payment_method, payment_status, paid_amount, order_status, order_for,
         mlm_source_user_id, mlm_eligible, mlm_order_type)
-       VALUES ($1, NULL, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'admin', $11, TRUE, 'distributor_self_purchase')
+       VALUES ($1, NULL, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, 'admin', $13, TRUE, 'distributor_self_purchase')
        RETURNING *`,
       [
         orderRef,
@@ -893,7 +1020,9 @@ exports.placeDistributorOrder = async (req, res) => {
         totalBV,
         shipping_address,
         payment_method,
-        payment_method === "wallet" ? "confirmed" : "pending",
+        paymentStatus,
+        paidAmount,
+        orderStatus,
         distributorUserId,
       ],
     );
@@ -935,6 +1064,23 @@ exports.placeDistributorOrder = async (req, res) => {
       if (deductRes.rowCount === 0) {
         throw new Error(`Inventory update failed for ${item.product_name}`);
       }
+    }
+
+    // Record individual payment entries in distributor_order_payments
+    for (const entry of paymentRecordEntries) {
+      await client.query(
+        `INSERT INTO distributor_order_payments
+          (order_id, user_id, payment_method, amount, transaction_id, status, payment_details)
+         VALUES ($1, $2, $3, $4, $5, 'completed', $6)`,
+        [
+          dbOrderId,
+          distributorUserId,
+          entry.method,
+          entry.amount,
+          entry.transaction_id,
+          entry.payment_details,
+        ],
+      );
     }
 
     const levelCommRes = await client.query(
@@ -1083,6 +1229,8 @@ exports.placeDistributorOrder = async (req, res) => {
       self_commission_status: selfCommission > 0 ? "pending" : "not_eligible",
       activated:
         Number(existingQualifying.rows[0].cnt) === 0 ? true : null,
+      payment_status: paymentStatus,
+      paid_amount: paidAmount,
     });
   } catch (error) {
     await client.query("ROLLBACK");
