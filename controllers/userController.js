@@ -111,6 +111,8 @@ exports.updateMember = async (req, res) => {
 
 exports.getMyDownline = async (req, res) => {
   try {
+    const { status, kyc_status, is_active } = req.query;
+
     const userResult = await db.query(
       "SELECT node_path FROM users WHERE id = $1",
       [req.user.id],
@@ -130,8 +132,8 @@ exports.getMyDownline = async (req, res) => {
       });
     }
 
-    const downline = await db.query(
-      `SELECT 
+    let query = `
+      SELECT 
         u.id, 
         u.username, 
         u.email, 
@@ -141,7 +143,8 @@ exports.getMyDownline = async (req, res) => {
         u.referral_code,
         u.created_at,
         u.full_name as name,
-        -- Subquery to count descendants for each row
+        u.is_active,
+        u.kyc_status,
         (
           SELECT COUNT(*) 
           FROM users sub 
@@ -149,9 +152,38 @@ exports.getMyDownline = async (req, res) => {
         )::int as referrals_count
        FROM users u
        WHERE u.node_path <@ $1::ltree AND u.id != $2
-       ORDER BY u.node_path ASC`,
-      [myPath, req.user.id],
-    );
+    `;
+
+    const params = [myPath, req.user.id];
+    let paramIndex = 3;
+
+    if (is_active !== undefined) {
+      query += ` AND u.is_active = $${paramIndex}`;
+      params.push(is_active === "true");
+      paramIndex++;
+    }
+
+    if (kyc_status !== undefined) {
+      query += ` AND u.kyc_status = $${paramIndex}`;
+      params.push(kyc_status === true);
+      paramIndex++;
+    }
+
+    if (status) {
+      if (status === "inactive") {
+        query += ` AND u.is_active = false`;
+      } else if (status === "active") {
+        query += ` AND u.is_active = true`;
+      } else if (status === "kyc_pending") {
+        query += ` AND u.kyc_status = false`;
+      } else if (status === "kyc_approved") {
+        query += ` AND u.kyc_status = true`;
+      }
+    }
+
+    query += ` ORDER BY u.node_path ASC`;
+
+    const downline = await db.query(query, params);
 
     res.json({ success: true, data: downline.rows });
   } catch (err) {

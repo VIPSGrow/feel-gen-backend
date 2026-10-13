@@ -353,14 +353,21 @@ function compileOrderEmail(orderData, templateKey = "order_placed") {
 // Main mail wrapper compiler function
 async function sendPlacedOrderEmail(userEmail, orderData) {
   const { subject, text, html } = compileOrderEmail(orderData);
+  console.log(`[EMAIL] Attempting to send order confirmation to ${userEmail} (order_id=${orderData.order_id})`);
 
-  await transporter.sendMail({
-    from: '"Feel Safe" <no-reply@feelsafeco.in>',
-    to: userEmail,
-    subject,
-    text,
-    html,
-  });
+  try {
+    const info = await transporter.sendMail({
+      from: '"Feel Safe" <no-reply@feelsafeco.in>',
+      to: userEmail,
+      subject,
+      text,
+      html,
+    });
+    console.log(`[EMAIL] SUCCESS - order confirmation sent to ${userEmail}, messageId=${info.messageId}, response=${JSON.stringify(info.response || {})}`);
+  } catch (emailErr) {
+    console.error(`[EMAIL] FAILED to send order confirmation to ${userEmail}: ${emailErr.message}`, emailErr.stack);
+    throw emailErr;
+  }
 }
 
 // order status update (currently using same template key: order_placed)
@@ -369,14 +376,21 @@ async function sendOrderStatusUpdateEmail(userEmail, orderData) {
     orderData,
     orderData.status,
   );
+  console.log(`[EMAIL] Attempting to send order status update to ${userEmail} (order_id=${orderData.order_id}, status=${orderData.status})`);
 
-  await transporter.sendMail({
-    from: '"Feel Safe" <no-reply@feelsafeco.in>',
-    to: userEmail,
-    subject,
-    text,
-    html,
-  });
+  try {
+    const info = await transporter.sendMail({
+      from: '"Feel Safe" <no-reply@feelsafeco.in>',
+      to: userEmail,
+      subject,
+      text,
+      html,
+    });
+    console.log(`[EMAIL] SUCCESS - order status update sent to ${userEmail}, messageId=${info.messageId}, response=${JSON.stringify(info.response || {})}`);
+  } catch (emailErr) {
+    console.error(`[EMAIL] FAILED to send order status update to ${userEmail}: ${emailErr.message}`, emailErr.stack);
+    throw emailErr;
+  }
 }
 
 module.exports = { sendPlacedOrderEmail, sendOrderStatusUpdateEmail };

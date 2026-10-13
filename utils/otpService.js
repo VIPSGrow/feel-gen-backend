@@ -34,13 +34,21 @@ exports.transporter = nodemailer.createTransport({
   secure: false, // Use SSL
   auth: {
     user: "no-reply@feelsafeco.in",
-    pass: "Vats1992*", // Paste the new code here
+    pass: "VpS_Secured#2026!Feelsafe", // Paste the new code here
   },
   tls: {
     // This helps if you are running on localhost or a restricted network
     rejectUnauthorized: false,
   },
 });
+
+// Verify SMTP connection at startup so failures are visible immediately
+exports.transporter
+  .verify()
+  .then(() => console.log("[EMAIL] SMTP connection verified successfully for no-reply@feelsafeco.in"))
+  .catch((err) =>
+    console.error("[EMAIL] SMTP connection verification FAILED:", err.message),
+  );
 
 async function getUserContact(userId) {
   const result = await db.query(
@@ -127,17 +135,24 @@ exports.sendOTP = async (userId, purpose = "transaction") => {
 
   if (useEmail) {
     const subject = `Your ${purpose} OTP`;
+    console.log(`[EMAIL] Attempting to send OTP to ${user.email} (user_id=${userId}, purpose=${purpose})`);
 
-    await this.transporter.sendMail({
-      to: user.email,
-      subject,
-      text: message,
-    });
+    try {
+      const info = await this.transporter.sendMail({
+        to: user.email,
+        subject,
+        text: message,
+      });
+      console.log(`[EMAIL] SUCCESS - OTP sent to ${user.email}, messageId=${info.messageId}, response=${JSON.stringify(info.response || {})}`);
+    } catch (emailErr) {
+      console.error(`[EMAIL] FAILED to send OTP to ${user.email}: ${emailErr.message}`, emailErr.stack);
+      throw emailErr;
+    }
+
     await db.query(
       "UPDATE users SET otp_email_count = otp_email_count + 1 WHERE id = $1",
       [userId],
     );
-    console.log("EMAIL OTP sent");
   } else {
     // SMS via Edumarc
     await sendSmsEdumarc({ phone: user.phone, otp });

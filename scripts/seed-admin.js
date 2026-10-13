@@ -16,7 +16,7 @@ async function seedAdminData() {
         address, city, state, pin,
         bank_name, account_holder_name, account_no, ifsc_code, branch,
         referral_code, referrer_name, referrer_contact,
-        nominee_name, nominee_relationship, nominee_age, nominee_contact, nominee_aadhar,
+        nominee_name, nominee_relationship, nominee_age, nominee_contact, nominee_aadhaar,
         business_level, agreed_to_terms, kyc_status,
         username, password_hash, referrer_id,
         is_active, role, current_rank_id, node_path
@@ -35,7 +35,7 @@ async function seedAdminData() {
         "1970-01-01",
         "Male",
         null,
-        "eelsafe.pvtltd@gmail.com",
+        "feelseafe.pvtltd@gmail.com",
         "8130124630",
         null,
         null,
@@ -68,7 +68,6 @@ async function seedAdminData() {
       ],
     );
 
-    // FIX: Check if newUser.rows[0] exists before accessing .id
     if (newUser.rows.length > 0) {
       const adminId = newUser.rows[0].id;
 
@@ -80,7 +79,6 @@ async function seedAdminData() {
       await client.query("COMMIT");
       console.log("✅ Super Admin seeded successfully!");
     } else {
-      // If user existed, we don't need to commit a new wallet
       await client.query("ROLLBACK");
       console.log("ℹ️ Super Admin already exists. No changes made.");
     }
