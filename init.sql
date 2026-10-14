@@ -154,15 +154,6 @@ CREATE TABLE IF NOT EXISTS order_items (
 
 
 
-CREATE TABLE IF NOT EXISTS level_commissions (
-    id SERIAL PRIMARY KEY,
-    level_no INTEGER NOT NULL UNIQUE, -- 1, 2, 3...
-    commission_percentage DECIMAL(5, 2) NOT NULL, -- e.g., 10.00 for 10%
-    min_rank_required VARCHAR(50) DEFAULT 'Distributor',
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
-);
-
-
 CREATE TABLE IF NOT EXISTS wallets (
     id SERIAL PRIMARY KEY,
     user_id INTEGER REFERENCES users(id) ON DELETE CASCADE UNIQUE,

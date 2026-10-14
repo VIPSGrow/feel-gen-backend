@@ -11,6 +11,15 @@ exports.getBalance = async (req, res) => {
     COALESCE(w.company_fund, 0) as company_balance,
     (COALESCE(w.total_amount, 0) + COALESCE(w.pending_amount, 0)) as available_balance,
     COALESCE(w.withdrawable_amount, 0) as withdrawable_amount,
+    COALESCE((
+      SELECT SUM(t.amount)
+      FROM transactions t
+      WHERE t.user_id = $1
+        AND t.type = 'debit'
+        AND t.category = 'withdraw'
+        AND t.status = 'completed'
+        AND t.remarks ILIKE '%TDS Deduction%'
+    ), 0) as total_tds_deducted,
     (SELECT COUNT(*) FROM transactions WHERE user_id = $1) as total_transactions
 FROM wallets w
 WHERE w.user_id = $1;`;
@@ -23,6 +32,7 @@ WHERE w.user_id = $1;`;
         total_balance: 0,
         pending_balance: 0,
         available_balance: 0,
+        total_tds_deducted: 0,
         total_transactions: 0,
       },
     });

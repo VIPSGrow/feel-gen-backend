@@ -157,10 +157,6 @@ BEGIN
   END IF;
 END $$;
 
-INSERT INTO level_commissions (level_no, commission_percentage, level_name)
-VALUES (0, 3.00, 'Self Cashback')
-ON CONFLICT (level_no) DO NOTHING;
-
 INSERT INTO mlm_generation_commissions
   (plan_settings_id, level_no, commission_percent, level_name)
 SELECT ps.id, lvl.l, lvl.p, lvl.n

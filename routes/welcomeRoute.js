@@ -22,7 +22,10 @@ router.post("/generate", auth, async (req, res) => {
       u.phone, 
       u.business_level, 
       u.created_at,
-      l.level_name FROM users u left join level_commissions l on l.level_no = u.business_level WHERE u.id = $1`,
+      l.level_name FROM users u left join mlm_generation_commissions l on l.level_no = u.business_level
+         AND l.is_active = TRUE
+         AND l.plan_settings_id = (SELECT id FROM mlm_plan_settings WHERE is_active = TRUE ORDER BY effective_from DESC LIMIT 1)
+       WHERE u.id = $1`,
       [userId],
     );
 

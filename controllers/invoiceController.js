@@ -114,14 +114,14 @@ async function generateInvoice(req, res) {
       const now = new Date();
       const currentYearShort = now.getFullYear().toString().slice(-2); // "26"
       const nextYearShort = (now.getFullYear() + 1).toString().slice(-2); // "27"
-      const invoiceYearFormat = `${currentYearShort}${nextYearShort}`; // "2627"
+      const invoiceYearFormat = `${currentYearShort}-${nextYearShort}`; // "2627"
       const invoiceMonthFormat = String(now.getMonth() + 1).padStart(2, "0"); // "06"
 
       // User Type Code: D = Distributor, C = Customer/User
       const typeCode = orderData.user_type === "Distributor" ? "D" : "C";
 
       // Combine Frame: FS-2627-06-IN-D137
-      invoiceNo = `FS-${invoiceYearFormat}-${invoiceMonthFormat}-IN-${typeCode}${currentSno}`;
+      invoiceNo = `FS/${invoiceYearFormat}/${currentSno}`;
 
       // न्यूली जनरेटेड नंबर्स को orders टेबल में सेव करें
       await db.query(
@@ -304,14 +304,14 @@ async function downloadByEmail(req, res) {
       const now = new Date();
       const currentYearShort = now.getFullYear().toString().slice(-2); // "26"
       const nextYearShort = (now.getFullYear() + 1).toString().slice(-2); // "27"
-      const invoiceYearFormat = `${currentYearShort}${nextYearShort}`; // "2627"
+      const invoiceYearFormat = `${currentYearShort}-${nextYearShort}`; // "2627"
       const invoiceMonthFormat = String(now.getMonth() + 1).padStart(2, "0"); // "06"
 
       // User Type Code: D = Distributor, C = Customer/User
       const typeCode = orderData.user_type === "Distributor" ? "D" : "C";
 
       // Combine Frame: FS-2627-06-IN-D137
-      invoiceNo = `FS-${invoiceYearFormat}-${invoiceMonthFormat}-IN-${typeCode}${currentSno}`;
+      invoiceNo = `FS/${invoiceYearFormat}/${currentSno}`;
 
       // न्यूली जनरेटेड नंबर्स को orders टेबल में सेव करें
       await db.query(

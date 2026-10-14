@@ -50,7 +50,8 @@ async function releasePendingCommissions(client) {
   for (const event of released.rows) {
     await client.query(
       `UPDATE transactions
-       SET status = 'completed'
+       SET status = 'completed',
+           completed_at = CURRENT_TIMESTAMP
        WHERE id = $1 AND status = 'pending'`,
       [event.transaction_id],
     );

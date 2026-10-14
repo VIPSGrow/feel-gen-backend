@@ -3,7 +3,13 @@ const SelfCommission = async (client, userId, body) => {
     const { amount, razorpay_order_id, order_id, orderDbId } = body;
 
     const commConfigOWN = await client.query(
-      `SELECT commission_percentage FROM level_commissions WHERE level_no = 0`,
+      `SELECT gc.commission_percent AS commission_percentage
+       FROM mlm_generation_commissions gc
+       WHERE gc.plan_settings_id = (
+         SELECT id FROM mlm_plan_settings
+         WHERE is_active = TRUE ORDER BY effective_from DESC LIMIT 1
+       ) AND gc.is_active = TRUE AND gc.level_no = 0
+       LIMIT 1`,
     );
     const ownRate = Number(commConfigOWN.rows[0]?.commission_percentage || 0);
     const ownCommission = Number((amount * ownRate / 100).toFixed(2));

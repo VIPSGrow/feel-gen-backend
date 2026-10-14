@@ -222,7 +222,7 @@ exports.getMyTree = async (req, res) => {
         u.id, u.username, u.email, u.phone, u.full_name, u.node_path, 
         u.referrer_id, u.referral_code, u.created_at, u.is_active, u.kyc_status,
         ${QUALIFICATION_SELECT_SQL},
-        COALESCE(r.rank_name, gc.level_name, 'Distributor') AS rank_name,
+        COALESCE(current_rank.level_name, gc.level_name, 'Active Partner') AS rank_name,
         COALESCE((
           SELECT SUM(mce.commission_amount)
           FROM mlm_commission_events mce
@@ -244,8 +244,8 @@ exports.getMyTree = async (req, res) => {
           )
           SELECT COUNT(*) FROM sub
         )::int as team_size,
-        COALESCE(r.rank_no, gc.level_no) AS level_no,
-        gc.commission_percent AS commission_percentage,
+        COALESCE(current_rank.level_no, gc.level_no) AS level_no,
+        COALESCE(current_rank.commission_percent, gc.commission_percent) AS commission_percentage,
         -- Create a JSON object for referrer if it exists
         CASE 
           WHEN p.id IS NOT NULL THEN 
@@ -260,7 +260,10 @@ exports.getMyTree = async (req, res) => {
        FROM downline d
        JOIN users u ON u.id = d.id
        LEFT JOIN users p ON u.referrer_id = p.id
-       LEFT JOIN mlm_ranks r ON r.id = u.current_rank_id AND r.is_active = TRUE
+       LEFT JOIN mlm_generation_commissions current_rank
+         ON current_rank.plan_settings_id = (SELECT id FROM active_plan)
+        AND current_rank.level_no = u.current_rank_no
+        AND current_rank.is_active = TRUE
        LEFT JOIN LATERAL (
          SELECT gc.level_no, gc.level_name, gc.commission_percent
          FROM mlm_generation_commissions gc
@@ -269,7 +272,7 @@ exports.getMyTree = async (req, res) => {
            AND gc.level_no = d.depth
          ORDER BY gc.level_no
          LIMIT 1
-       ) gc ON r.rank_no IS NULL`,
+       ) gc ON current_rank.id IS NULL`,
       [userId],
     );
 
@@ -327,7 +330,7 @@ exports.getMyTreeById = async (req, res) => {
         u.id, u.username, u.email, u.phone, u.full_name, u.node_path, 
         u.referrer_id, u.referral_code, u.created_at, u.is_active, u.kyc_status,
         ${QUALIFICATION_SELECT_SQL},
-        COALESCE(r.rank_name, gc.level_name, 'Distributor') AS rank_name,
+        COALESCE(current_rank.level_name, gc.level_name, 'Active Partner') AS rank_name,
         COALESCE((
           SELECT SUM(mce.commission_amount)
           FROM mlm_commission_events mce
@@ -346,8 +349,8 @@ exports.getMyTreeById = async (req, res) => {
           FROM users sub 
           WHERE sub.node_path <@ u.node_path AND sub.id != u.id
         )::int as team_size,
-        COALESCE(r.rank_no, gc.level_no) AS level_no,
-        gc.commission_percent AS commission_percentage,
+        COALESCE(current_rank.level_no, gc.level_no) AS level_no,
+        COALESCE(current_rank.commission_percent, gc.commission_percent) AS commission_percentage,
         -- Create a JSON object for referrer if it exists
         CASE 
           WHEN p.id IS NOT NULL THEN 
@@ -361,7 +364,10 @@ exports.getMyTreeById = async (req, res) => {
         END as referrer
        FROM users u
        LEFT JOIN users p ON u.referrer_id = p.id
-       LEFT JOIN mlm_ranks r ON r.id = u.current_rank_id AND r.is_active = TRUE
+       LEFT JOIN mlm_generation_commissions current_rank
+         ON current_rank.plan_settings_id = (SELECT id FROM active_plan)
+        AND current_rank.level_no = u.current_rank_no
+        AND current_rank.is_active = TRUE
        LEFT JOIN LATERAL (
          SELECT gc.level_no, gc.level_name, gc.commission_percent
          FROM mlm_generation_commissions gc
@@ -372,7 +378,7 @@ exports.getMyTreeById = async (req, res) => {
            )
          ORDER BY gc.level_no
          LIMIT 1
-       ) gc ON r.rank_no IS NULL
+       ) gc ON current_rank.id IS NULL
        WHERE u.node_path <@ (SELECT node_path FROM users WHERE id = $1)::ltree`,
       [userId],
     );
@@ -920,25 +926,6 @@ exports.createUser = async (req, res) => {
       node_path = "root";
     }
 
-    const initialRankRes = await client.query(
-      `SELECT r.id
-       FROM mlm_ranks r
-       JOIN mlm_plan_settings p ON p.id = r.plan_settings_id
-       WHERE p.is_active = TRUE
-         AND p.effective_from <= CURRENT_TIMESTAMP
-         AND (p.effective_to IS NULL OR p.effective_to > CURRENT_TIMESTAMP)
-         AND r.rank_no = 0
-         AND r.is_active = TRUE
-       ORDER BY p.effective_from DESC
-       LIMIT 1`,
-    );
-
-    if (initialRankRes.rows.length === 0) {
-      throw new Error("Initial rank (rank_no 0) not found for the active MLM plan");
-    }
-
-    const initialRankId = initialRankRes.rows[0].id;
-
     // 🔥 FINAL INSERT
     const newUser = await client.query(
       `INSERT INTO users (
@@ -948,7 +935,7 @@ exports.createUser = async (req, res) => {
         referral_code, referrer_name, referrer_contact,
         nominee_name, nominee_relationship, nominee_age, nominee_contact, nominee_aadhaar,
         business_level, agreed_to_terms, kyc_status,
-        username, password_hash, referrer_id, current_rank_id,
+        username, password_hash, referrer_id,
         node_path, is_active, gstin, profile_pic, initiator_user_id
        ) VALUES (
       $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,
@@ -956,8 +943,8 @@ exports.createUser = async (req, res) => {
       $18,$19,$20,
       $21,$22,$23,$24,$25,
       $26,$27,$28,
-      $29,$30,$31,$32,
-      $33,$34,$35,$36,$37
+      $29,$30,$31,
+      $32,$33,$34,$35,$36
       ) RETURNING *`,
       [
         full_name || null,
@@ -991,7 +978,6 @@ exports.createUser = async (req, res) => {
         username,
         hashedPassword,
         referrer_id || null,
-        initialRankId,
         node_path,
         false,
         gst_no || "",

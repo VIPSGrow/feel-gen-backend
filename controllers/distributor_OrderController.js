@@ -192,28 +192,66 @@ exports.d_p_o = async (req, res) => {
 
     // 4. Coupon discount (if provided)
     let discount = 0;
+    let appliedCouponId = null;
     if (coupon_code) {
-      // Reuse coupon logic or simple check
-      const coupon = await client.query(
-        "SELECT * FROM coupons WHERE code = $1 AND status = 'active'",
-        [coupon_code.toUpperCase()],
+      const couponRes = await client.query(
+        `SELECT * FROM coupons
+         WHERE code = $1 AND status = 'active' AND used_count < usage_limit`,
+        [String(coupon_code).trim().toUpperCase()],
       );
-      if (coupon.rows[0]) {
-        // Simplified: fixed/percentage on subTotal
-        const c = coupon.rows[0];
-        if (c.discount_type === "percentage") {
-          discount = (parseFloat(c.discount_amount) / 100) * subTotal;
-        } else {
-          discount = parseFloat(c.discount_amount);
-        }
-        discount = Math.min(
-          discount,
-          parseFloat(c.max_discount_amount || discount),
-        );
+      const c = couponRes.rows[0];
+      if (!c) throw new Error("Invalid or inactive coupon");
+
+      // Same base as the coupon validate API: payable amount incl. tax
+      const payableBeforeDiscount = subTotal + taxAmount + shippingCharges;
+
+      const now = new Date();
+      if (c.valid_from && new Date(c.valid_from) > now) {
+        throw new Error("Coupon not yet valid");
       }
+      if (c.expires_at && new Date(c.expires_at) < now) {
+        throw new Error("Coupon expired");
+      }
+      if (payableBeforeDiscount < parseFloat(c.min_order_amount || 0)) {
+        throw new Error(`Minimum order ${c.min_order_amount} required`);
+      }
+      if (c.applicable_products && c.applicable_products.length > 0) {
+        const productIds = items.map((it) => parseInt(it.product_id));
+        if (!c.applicable_products.every((id) => productIds.includes(id))) {
+          throw new Error("Coupon not applicable to these products");
+        }
+      }
+      if (
+        c.applicable_users &&
+        c.applicable_users.length > 0 &&
+        !c.applicable_users.includes(parseInt(userId))
+      ) {
+        throw new Error("Coupon not applicable to this user");
+      }
+      const usageCheck = await client.query(
+        `SELECT 1 FROM coupon_usages WHERE coupon_id = $1 AND user_id = $2`,
+        [c.id, userId],
+      );
+      if (usageCheck.rows.length > 0) {
+        throw new Error("Coupon already used by this user");
+      }
+
+      if (c.discount_type === "percentage") {
+        discount =
+          (parseFloat(c.discount_amount) / 100) * payableBeforeDiscount;
+      } else {
+        discount = parseFloat(c.discount_amount);
+      }
+      if (c.max_discount_amount) {
+        discount = Math.min(discount, parseFloat(c.max_discount_amount));
+      }
+      discount = Math.min(discount, payableBeforeDiscount);
+      appliedCouponId = c.id;
     }
 
-    const totalAmount = subTotal + taxAmount + shippingCharges - discount;
+    const totalAmount = Number(
+      (subTotal + taxAmount + shippingCharges - discount).toFixed(2),
+    );
 
     // Minimum cart total validation (must be at least 700)
     const MIN_CART_TOTAL = 700;
@@ -282,6 +320,9 @@ exports.d_p_o = async (req, res) => {
     const paymentRecordEntries = [];
 
     for (const payment of paymentsToProcess) {
+      // Fully covered by coupon: nothing to charge or record
+      if (!(payment.methodAmount > 0)) continue;
+
       if (payment.method === "wallet") {
         // Lock wallet row and validate balance
         const walletRes = await client.query(
@@ -390,6 +431,23 @@ exports.d_p_o = async (req, res) => {
     );
     const dbOrderId = newOrder.rows[0].id;
 
+    if (appliedCouponId) {
+      // Atomic claim so concurrent orders cannot exceed usage_limit
+      const claimed = await client.query(
+        `UPDATE coupons SET used_count = used_count + 1
+         WHERE id = $1 AND used_count < usage_limit
+         RETURNING id`,
+        [appliedCouponId],
+      );
+      if (claimed.rowCount === 0) {
+        throw new Error("Coupon usage limit reached");
+      }
+      await client.query(
+        `INSERT INTO coupon_usages (coupon_id, user_id, order_id)
+         VALUES ($1, $2, $3)`,
+        [appliedCouponId, userId, dbOrderId],
+      );
+    }
 
     // 8. Create order_items
     for (const item of validatedItems) {

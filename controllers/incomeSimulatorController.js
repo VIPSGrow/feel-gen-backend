@@ -8,9 +8,15 @@ const DEFAULTS = {
 };
 
 async function getPercentFromLevelCommissions(level_no) {
-  // Uses dynamic commission config from level_commissions table
+  // Uses dynamic commission config from mlm_generation_commissions table
   const result = await db.query(
-    "SELECT commission_percentage FROM level_commissions WHERE level_no = $1 LIMIT 1",
+    `SELECT gc.commission_percent AS commission_percentage
+     FROM mlm_generation_commissions gc
+     WHERE gc.plan_settings_id = (
+       SELECT id FROM mlm_plan_settings
+       WHERE is_active = TRUE ORDER BY effective_from DESC LIMIT 1
+     ) AND gc.is_active = TRUE AND gc.level_no = $1
+     LIMIT 1`,
     [level_no],
   );
   const pct = Number(result.rows?.[0]?.commission_percentage);

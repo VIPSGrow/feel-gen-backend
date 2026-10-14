@@ -221,10 +221,6 @@ exports.deleteSetting = async (req, res) => {
 // (1-7), ranks, and rank rewards.
 exports.getLevelCommissions = async (req, res) => {
   try {
-    const selfRes = await db.query(
-      "SELECT level_no, commission_percentage, level_name FROM level_commissions WHERE level_no = 0",
-    );
-
     const planRes = await db.query(
       `SELECT id, direct_partner_commission_percent
        FROM mlm_plan_settings
@@ -234,29 +230,34 @@ exports.getLevelCommissions = async (req, res) => {
     );
     const plan = planRes.rows[0];
 
-    const [generationRes, ranksRes, rewardsRes] = plan
+    const selfRes = plan
+      ? await db.query(
+          `SELECT level_no, commission_percent AS commission_percentage, level_name, team_size_threshold
+           FROM mlm_generation_commissions
+           WHERE plan_settings_id = $1 AND level_no = 0`,
+          [plan.id],
+        )
+      : { rows: [] };
+
+    const [generationRes, rewardsRes] = plan
       ? await Promise.all([
           db.query(
-            `SELECT level_no, commission_percent, level_name
+            `SELECT id, level_no, commission_percent, level_name, team_size_threshold
              FROM mlm_generation_commissions
              WHERE plan_settings_id = $1
              ORDER BY level_no`,
             [plan.id],
           ),
           db.query(
-            `SELECT * FROM mlm_ranks WHERE plan_settings_id = $1 ORDER BY rank_no`,
-            [plan.id],
-          ),
-          db.query(
-            `SELECT rr.*, r.rank_no, r.rank_name
+            `SELECT rr.*, gc.level_no AS rank_no, gc.level_name AS rank_name
              FROM mlm_rank_rewards rr
-             JOIN mlm_ranks r ON r.id = rr.rank_id
-             WHERE r.plan_settings_id = $1
-             ORDER BY r.rank_no, rr.id`,
+             JOIN mlm_generation_commissions gc ON gc.id = rr.generation_commission_id
+             WHERE gc.plan_settings_id = $1
+             ORDER BY gc.level_no, rr.id`,
             [plan.id],
           ),
         ])
-      : [{ rows: [] }, { rows: [] }, { rows: [] }];
+      : [{ rows: [] }, { rows: [] }];
 
     const commissions = [
       {
@@ -271,11 +272,15 @@ exports.getLevelCommissions = async (req, res) => {
         level_name: "Direct Partner",
         commission_percentage: Number(plan?.direct_partner_commission_percent || 0),
       },
-      ...generationRes.rows.map((r) => ({
+      ...generationRes.rows
+        .filter((r) => Number(r.level_no) > 0)
+        .map((r) => ({
+        id: Number(r.id),
         level_no: Number(r.level_no),
         type: "generation",
         level_name: r.level_name,
         commission_percentage: Number(r.commission_percent),
+        team_size_threshold: Number(r.team_size_threshold),
       })),
     ];
 
@@ -283,7 +288,6 @@ exports.getLevelCommissions = async (req, res) => {
       success: true,
       message: "Level commissions fetched successfully",
       data: commissions,
-      ranks: ranksRes.rows,
       rewards: rewardsRes.rows,
     });
   } catch (error) {
@@ -300,15 +304,22 @@ exports.getLevelCommission = async (req, res) => {
     const { level_no } = req.params;
 
     const parsedLevelNo = parseInt(level_no);
-    if (isNaN(parsedLevelNo) || parsedLevelNo < 1) {
+    if (isNaN(parsedLevelNo) || parsedLevelNo < 0) {
       return res.status(400).json({
         success: false,
-        message: "Valid level_no (positive integer) is required",
+        message: "Valid level_no (non-negative integer) is required",
       });
     }
 
     const result = await db.query(
-      "SELECT * FROM level_commissions WHERE level_no = $1",
+      `SELECT gc.*, gc.commission_percent AS commission_percentage,
+              gc.team_size_threshold AS team_size
+       FROM mlm_generation_commissions gc
+       WHERE gc.level_no = $1
+         AND gc.plan_settings_id = (
+           SELECT id FROM mlm_plan_settings
+           WHERE is_active = TRUE ORDER BY effective_from DESC LIMIT 1
+         )`,
       [parsedLevelNo],
     );
 
@@ -340,24 +351,24 @@ exports.createLevelCommission = async (req, res) => {
       commission_percentage,
       level_name,
       team_size,
-      ir_direct,
-      bima,
-      ir_commission,
     } = req.body;
 
     const parsedLevelNo = parseInt(level_no);
-    if (isNaN(parsedLevelNo) || parsedLevelNo < 1) {
+    if (isNaN(parsedLevelNo) || parsedLevelNo < 0 || parsedLevelNo > 7) {
       return res.status(400).json({
         success: false,
-        message: "level_no must be positive integer",
+        message: "level_no must be an integer between 0 and 7",
       });
     }
 
+    const pct = Number(commission_percentage);
     if (
-      !commission_percentage ||
-      isNaN(commission_percentage) ||
-      commission_percentage < 0 ||
-      commission_percentage > 100
+      commission_percentage === undefined ||
+      commission_percentage === null ||
+      commission_percentage === "" ||
+      !Number.isFinite(pct) ||
+      pct < 0 ||
+      pct > 100
     ) {
       return res.status(400).json({
         success: false,
@@ -366,18 +377,23 @@ exports.createLevelCommission = async (req, res) => {
     }
 
     const result = await db.query(
-      "INSERT INTO level_commissions (level_no, commission_percentage, level_name, team_size, ir_direct, bima, ir_commission) VALUES ($1, $2, $3,$4,$5,$6,$7) RETURNING *",
-      [
-        parsedLevelNo,
-        parseFloat(commission_percentage),
-        level_name,
-        team_size,
-        parseFloat(ir_direct),
-        bima,
-        parseFloat(ir_commission),
-      ],
+      `INSERT INTO mlm_generation_commissions
+         (plan_settings_id, level_no, commission_percent, level_name, team_size_threshold)
+       SELECT id, $1, $2, $3, $4
+       FROM mlm_plan_settings
+       WHERE is_active = TRUE
+       ORDER BY effective_from DESC
+       LIMIT 1
+       RETURNING *`,
+      [parsedLevelNo, pct, level_name || null, Number(team_size) || 0],
     );
 
+    if (result.rowCount === 0) {
+      return res.status(404).json({
+        success: false,
+        message: "Active MLM plan not found",
+      });
+    }
     res.status(201).json({
       success: true,
       message: "Level commission created successfully",
@@ -401,7 +417,7 @@ exports.createLevelCommission = async (req, res) => {
 exports.updateLevelCommission = async (req, res) => {
   try {
     const { level_id } = req.params;
-    const { type, commission_percentage, level_name } = req.body;
+    const { type, commission_percentage, level_name, team_size_threshold } = req.body;
     const percentage = Number(commission_percentage);
 
     if (type === "direct_partner") {
@@ -457,10 +473,15 @@ exports.updateLevelCommission = async (req, res) => {
       }
 
       const selfRes = await db.query(
-        `UPDATE level_commissions
-         SET commission_percentage = $1,
-             level_name = COALESCE($2, level_name)
+        `UPDATE mlm_generation_commissions
+         SET commission_percent = $1,
+             level_name = COALESCE($2, level_name),
+             updated_at = CURRENT_TIMESTAMP
          WHERE level_no = 0
+           AND plan_settings_id = (
+             SELECT id FROM mlm_plan_settings
+             WHERE is_active = TRUE ORDER BY effective_from DESC LIMIT 1
+           )
          RETURNING *`,
         [percentage, level_name],
       );
@@ -480,7 +501,7 @@ exports.updateLevelCommission = async (req, res) => {
           type,
           level_name: selfRes.rows[0].level_name,
           commission_percentage: Number(
-            selfRes.rows[0].commission_percentage,
+            selfRes.rows[0].commission_percent,
           ),
         },
       });
@@ -519,14 +540,28 @@ exports.updateLevelCommission = async (req, res) => {
         });
       }
 
+      const threshold =
+        team_size_threshold === undefined ||
+        team_size_threshold === null ||
+        team_size_threshold === ""
+          ? null
+          : Number(team_size_threshold);
+      if (threshold !== null && (!Number.isFinite(threshold) || threshold < 0)) {
+        return res.status(400).json({
+          success: false,
+          message: "team_size_threshold must be a non-negative number",
+        });
+      }
+
       const generationRes = await db.query(
         `UPDATE mlm_generation_commissions
          SET commission_percent = $1,
              level_name = COALESCE($2, level_name),
+             team_size_threshold = COALESCE($5, team_size_threshold),
              updated_at = CURRENT_TIMESTAMP
          WHERE plan_settings_id = $3 AND level_no = $4
          RETURNING *`,
-        [percentage, level_name, planId, levelNo],
+        [percentage, level_name, planId, levelNo, threshold],
       );
 
       if (generationRes.rowCount === 0) {
@@ -543,41 +578,36 @@ exports.updateLevelCommission = async (req, res) => {
       });
     }
 
-    const {
-      team_size,
-      ir_direct,
-      bima,
-      ir_commission,
-      level_no: n_level_no,
-    } = req.body;
+    const { team_size, level_no: n_level_no } = req.body;
 
-    const parsedLevelNo = parseInt(level_id);
-    if (isNaN(parsedLevelNo) || parsedLevelNo < 1) {
+    const parsedLevelId = parseInt(level_id);
+    if (isNaN(parsedLevelId) || parsedLevelId < 1) {
       return res.status(400).json({
         success: false,
         message: "Valid level_id (positive integer) is required",
       });
     }
+    if (!Number.isFinite(percentage) || percentage < 0 || percentage > 100) {
+      return res.status(400).json({
+        success: false,
+        message: "commission_percentage must be between 0 and 100",
+      });
+    }
 
     const result = await db.query(
-      `UPDATE level_commissions SET 
-      commission_percentage = $1,
-      level_name = $2,
-      team_size = $3,
-      ir_direct = $4,
-      bima = $5,
-      ir_commission = $6 ,
-      level_no = $8
-      WHERE id = $7 RETURNING *`,
+      `UPDATE mlm_generation_commissions SET
+         commission_percent = $1,
+         level_name = COALESCE($2, level_name),
+         team_size_threshold = COALESCE($3, team_size_threshold),
+         level_no = COALESCE($4, level_no),
+         updated_at = CURRENT_TIMESTAMP
+       WHERE id = $5 RETURNING *`,
       [
-        parseFloat(commission_percentage),
-        level_name,
-        team_size,
-        ir_direct,
-        bima,
-        ir_commission,
-        parsedLevelNo,
-        n_level_no,
+        percentage,
+        level_name ?? null,
+        team_size === undefined || team_size === null ? null : Number(team_size),
+        n_level_no === undefined || n_level_no === null ? null : parseInt(n_level_no),
+        parsedLevelId,
       ],
     );
 
@@ -615,7 +645,13 @@ exports.deleteLevelCommission = async (req, res) => {
     }
 
     const result = await db.query(
-      "DELETE FROM level_commissions WHERE level_no = $1 RETURNING *",
+      `DELETE FROM mlm_generation_commissions
+       WHERE level_no = $1
+         AND plan_settings_id = (
+           SELECT id FROM mlm_plan_settings
+           WHERE is_active = TRUE ORDER BY effective_from DESC LIMIT 1
+         )
+       RETURNING *`,
       [parsedLevelNo],
     );
 
@@ -645,7 +681,7 @@ exports.getLevelCapping = async (req, res) => {
   try {
     const { level_no } = req.query;
     let query =
-      "SELECT cap.*, lc.level_name, lc.level_no FROM level_cappings cap LEFT JOIN level_commissions lc ON lc.id =  cap.level_id ";
+      "SELECT cap.*, lc.level_name, lc.level_no FROM level_cappings cap LEFT JOIN mlm_generation_commissions lc ON lc.id = cap.level_id ";
     const params = [];
 
     if (level_no) {

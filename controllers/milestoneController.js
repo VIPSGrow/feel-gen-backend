@@ -9,12 +9,12 @@ exports.getMilestones = async (req, res) => {
     let query = `
       SELECT 
         m.*, 
-        lc.level_name, 
-        lc.level_no,
-        lc.commission_percentage,
-        lc.team_size as required_team_size
+        gc.level_name, 
+        gc.level_no,
+        gc.commission_percent AS commission_percentage,
+        gc.team_size_threshold as required_team_size
       FROM level_milestones m
-      LEFT JOIN level_commissions lc ON m.level_id = lc.id
+      LEFT JOIN mlm_generation_commissions gc ON m.level_id = gc.id
     `;
 
     const params = [];
@@ -24,7 +24,7 @@ exports.getMilestones = async (req, res) => {
       params.push(parseInt(level_id));
     }
 
-    query += " ORDER BY lc.level_no ASC";
+    query += " ORDER BY gc.level_no ASC";
 
     const result = await db.query(query, params);
 

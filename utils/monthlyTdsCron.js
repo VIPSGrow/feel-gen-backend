@@ -1,27 +1,6 @@
 const cron = require("node-cron");
 const db = require("../config/db");
 
-
-
-// function getLastDayRangeUTC() {
-//   const now = new Date();
-//   const year = now.getUTCFullYear();
-//   const month = now.getUTCMonth(); // current month (0-11)
-
-//   // Previous month
-//   const prevMonth = month - 1;
-//   //   const prevMonth = month;
-//   const prevYear = prevMonth < 0 ? year - 1 : year;
-//   const prevMonthAdj = prevMonth < 0 ? 11 : prevMonth;
-
-//   const from = new Date(Date.UTC(prevYear, prevMonthAdj, 1, 0, 0, 0));
-//   const toExclusive = new Date(Date.UTC(year, month, 1, 0, 0, 0));
-
-//   // DisplayTo: पिछले महीने की आखिरी तारीख की रात 11:59:59 (डेटाबेस और PDF के लिए)
-//   const displayTo = new Date(toExclusive.getTime() - 1000); // 1 सेकंड घटाया
-
-//   return { from, toExclusive, displayTo, prevYear, prevMonth: prevMonthAdj };
-// }
 function getLastDayRangeUTC() {
   const now = new Date();
   const year = now.getUTCFullYear();
@@ -32,9 +11,8 @@ function getLastDayRangeUTC() {
   const prevMonth = month === 0 ? 11 : month - 1;
   const prevYear = month === 0 ? year - 1 : year;
   const from = new Date(Date.UTC(prevYear, prevMonth, 1, 0, 0, 0));
-  const displayTo = new Date(toExclusive.getTime() - 1000);
 
-  return { from, toExclusive, displayTo, prevYear, prevMonth };
+  return { from, toExclusive, prevYear, prevMonth };
 }
 
 const TAXABLE_CATEGORIES = [
@@ -49,10 +27,16 @@ async function getTdsPercent(client) {
     "SELECT setting_value FROM app_settings WHERE setting_key = 'tax_config' LIMIT 1",
   );
   const row = res.rows[0];
-  if (!row?.setting_value) return 0;
+  if (!row?.setting_value) {
+    throw new Error("TDS configuration is missing from app_settings.tax_config");
+  }
 
-  // stored as jsonb
-  return Number(row.setting_value?.tds_percent ?? 0);
+  const tdsPercent = Number(row.setting_value?.tds_percent);
+  if (!Number.isFinite(tdsPercent) || tdsPercent < 0 || tdsPercent > 100) {
+    throw new Error("Invalid tds_percent in app_settings.tax_config");
+  }
+
+  return tdsPercent;
 }
 
 /**
@@ -68,13 +52,11 @@ async function processMonthlyTds() {
 
   const client = await db.connect();
   try {
-    const { from, toExclusive, displayTo, prevYear, prevMonth } =
-      getLastDayRangeUTC();
+    const { from, toExclusive, prevYear, prevMonth } = getLastDayRangeUTC();
 
-    console.log("\n ", from, toExclusive, displayTo, prevYear, prevMonth);
+    console.log("\n ", from, toExclusive, prevYear, prevMonth);
 
-    // Idempotency: store processed month marker.
-    // If the table doesn't exist yet, this query will fail; we'll add migration in next step.
+    // Idempotency: store the processed month marker with the deductions.
     await client.query(
       `
       CREATE TABLE IF NOT EXISTS monthly_tds_cycles (
@@ -98,7 +80,7 @@ async function processMonthlyTds() {
     // and a failure rolls the claim back together with all wallet changes.
     const claim = await client.query(
       "INSERT INTO monthly_tds_cycles (cycle_key, from_date, to_date_exclusive) VALUES ($1,$2,$3) ON CONFLICT (cycle_key) DO NOTHING RETURNING cycle_key",
-      [cycleKey, from.toISOString(), displayTo.toISOString()],
+      [cycleKey, from.toISOString(), toExclusive.toISOString()],
     );
     if (!claim.rows.length) {
       await client.query("ROLLBACK");
@@ -121,8 +103,8 @@ async function processMonthlyTds() {
       FROM transactions t
       WHERE t.type = 'credit'
         AND t.category = ANY($3::text[])
-        AND t.created_at >= $1
-        AND t.created_at < $2
+        AND COALESCE(t.completed_at, t.created_at) >= $1
+        AND COALESCE(t.completed_at, t.created_at) < $2
         AND t.status = 'completed'
       GROUP BY t.user_id
       HAVING COALESCE(SUM(t.amount), 0) > 0
@@ -161,7 +143,9 @@ async function processMonthlyTds() {
           "UPDATE wallets SET total_amount = total_amount - $1, withdrawable_amount = GREATEST(0, COALESCE(withdrawable_amount, 0) - $1), updated_at = CURRENT_TIMESTAMP WHERE user_id = $2",
           [tdsAmount, userId],
         );
-        if (walletUpd.rowCount === 0) continue;
+        if (walletUpd.rowCount === 0) {
+          throw new Error(`Wallet not found for user ${userId} during TDS deduction`);
+        }
 
         console.log(`\nWallet Updated... transaction inserting `);
         // Audit transaction: TDS Deduction
@@ -204,7 +188,7 @@ async function processMonthlyTds() {
 cron.schedule("5 0 1 * *", async () => {
   console.log(`[monthlyTdsCron] running at ${new Date().toISOString()}`);
   await processMonthlyTds();
-});
+}, { timezone: "UTC" });
 
 console.log("[monthlyTdsCron] scheduled: 1st of every month 00:05 UTC (settles previous month).");
 

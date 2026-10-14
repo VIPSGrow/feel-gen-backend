@@ -1,9 +1,8 @@
-// Evaluates a user's downline team size against the active plan's mlm_ranks
-// thresholds and upgrades users.current_rank_id when a higher rank is reached,
-// granting any mlm_rank_rewards tied to each newly crossed rank.
+// Evaluates a user's downline team size against active generation-level
+// thresholds and grants rewards when the user's rank level increases.
 const evaluateAndUpgradeRank = async (client, userId) => {
   const userRes = await client.query(
-    `SELECT id, node_path, current_rank_id FROM users WHERE id = $1`,
+    `SELECT id, node_path, current_rank_no FROM users WHERE id = $1`,
     [userId],
   );
   const user = userRes.rows[0];
@@ -29,25 +28,19 @@ const evaluateAndUpgradeRank = async (client, userId) => {
   const teamSize = teamSizeRes.rows[0].team_size;
 
   const ranksRes = await client.query(
-    `SELECT id, rank_no, rank_name, milestone_threshold
-     FROM mlm_ranks
-     WHERE plan_settings_id = $1 AND is_active = TRUE AND threshold_type = 'team_size'
-     ORDER BY rank_no ASC`,
+    `SELECT id, level_no AS rank_no, level_name AS rank_name, team_size_threshold
+     FROM mlm_generation_commissions
+     WHERE plan_settings_id = $1 AND is_active = TRUE AND level_no BETWEEN 1 AND 7
+     ORDER BY level_no ASC`,
     [plan.id],
   );
   const ranks = ranksRes.rows;
   if (ranks.length === 0) return { upgraded: false };
 
-  const currentRankNo = user.current_rank_id
-    ? Number(
-        (await client.query(`SELECT rank_no FROM mlm_ranks WHERE id = $1`, [
-          user.current_rank_id,
-        ])).rows[0]?.rank_no ?? -1,
-      )
-    : -1;
+  const currentRankNo = Number(user.current_rank_no || 0);
 
   const eligibleRanks = ranks.filter(
-    (r) => teamSize >= Number(r.milestone_threshold) && Number(r.rank_no) > currentRankNo,
+    (r) => teamSize >= Number(r.team_size_threshold) && Number(r.rank_no) > currentRankNo,
   );
   if (eligibleRanks.length === 0) return { upgraded: false };
 
@@ -56,7 +49,7 @@ const evaluateAndUpgradeRank = async (client, userId) => {
 
   for (const rank of eligibleRanks) {
     const rewardsRes = await client.query(
-      `SELECT * FROM mlm_rank_rewards WHERE rank_id = $1`,
+      `SELECT * FROM mlm_rank_rewards WHERE generation_commission_id = $1`,
       [rank.id],
     );
 
@@ -114,8 +107,8 @@ const evaluateAndUpgradeRank = async (client, userId) => {
   }
 
   const topRank = eligibleRanks[eligibleRanks.length - 1];
-  await client.query(`UPDATE users SET current_rank_id = $1 WHERE id = $2`, [
-    topRank.id,
+  await client.query(`UPDATE users SET current_rank_no = $1 WHERE id = $2`, [
+    topRank.rank_no,
     userId,
   ]);
 

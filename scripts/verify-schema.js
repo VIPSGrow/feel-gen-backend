@@ -3,9 +3,9 @@ const db = require("../config/db");
 async function main() {
   const [count, tables, plan, levels] = await Promise.all([
     db.query("SELECT COUNT(*)::int AS count FROM information_schema.tables WHERE table_schema = 'public'"),
-    db.query("SELECT table_name FROM information_schema.tables WHERE table_schema = 'public' AND table_name IN ('users', 'wallets', 'transactions', 'mlm_plan_settings', 'mlm_generation_commissions', 'mlm_ranks', 'mlm_rank_rewards', 'mlm_commission_events') ORDER BY table_name"),
+    db.query("SELECT table_name FROM information_schema.tables WHERE table_schema = 'public' AND table_name IN ('users', 'wallets', 'transactions', 'mlm_plan_settings', 'mlm_generation_commissions', 'mlm_rank_rewards', 'mlm_commission_events', 'mlm_generation_rank_migration') ORDER BY table_name"),
     db.query("SELECT mrp, direct_partner_commission_percent, distributor_price, packets_per_package, max_generation_level FROM mlm_plan_settings WHERE is_active = TRUE"),
-    db.query("SELECT level_no, commission_percent FROM mlm_generation_commissions ORDER BY level_no"),
+    db.query("SELECT level_no, commission_percent, team_size_threshold FROM mlm_generation_commissions ORDER BY level_no"),
   ]);
 
   console.log(JSON.stringify({

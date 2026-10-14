@@ -16,9 +16,9 @@ const MilestonDistribution = async (
 
     // 2. वह माइलस्टोन ढूंढें जो इस यूजर को अभी तक नहीं मिला है
     const milestoneQuery = await client.query(
-      `SELECT m.id, m.milestone_name, m.reward_cash, m.cash_com, lc.team_size, lc.level_no
+      `SELECT m.id, m.milestone_name, m.reward_cash, m.cash_com, lc.team_size_threshold AS team_size, lc.level_no
        FROM level_milestones m
-       JOIN level_commissions lc ON m.level_id = lc.id
+       JOIN mlm_generation_commissions lc ON m.level_id = lc.id
        WHERE NOT EXISTS (
          SELECT 1 FROM transactions 
          WHERE user_id = $1 
