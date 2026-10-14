@@ -333,9 +333,10 @@ exports.getProductsForDistributor = async (req, res) => {
           'dimension_length', p.dimension_length,
           'dimension_width', p.dimension_width,
           'dimension_height', p.dimension_height,
-          'dimension_unit', p.dimension_unit,
+'dimension_unit', p.dimension_unit,
           'subcategories', p.subcategories,
           'attributes', p.attributes,
+          'specifications', p.specifications,
           'status', p.status,
           'created_at', p.created_at,
           -- Average Rating and Total Review Count
@@ -464,6 +465,7 @@ exports.createProduct = async (req, res) => {
       dimension_unit,
       mrp_percentage,
       dpc_percentage,
+      specifications,
       variants: variantsStr,
     } = req.body;
 
@@ -495,6 +497,22 @@ exports.createProduct = async (req, res) => {
         .json({ success: false, message: "Invalid variants JSON" });
     }
 
+    // Parse specifications JSON if provided as string
+    let parsedSpecifications = null;
+    if (specifications) {
+      if (typeof specifications === "string") {
+        try {
+          parsedSpecifications = JSON.parse(specifications);
+        } catch {
+          return res
+            .status(400)
+            .json({ success: false, message: "Invalid specifications JSON" });
+        }
+      } else if (typeof specifications === "object") {
+        parsedSpecifications = specifications;
+      }
+    }
+
     // Handle images (base64)
     let fImagePath = null;
     const fImageBase64 = req.body.f_image;
@@ -523,11 +541,11 @@ exports.createProduct = async (req, res) => {
     const b_discounted_price = parseFloat(discounted_price) || 0;
     const mrpPct = parseFloat(mrp_percentage) || 0;
     const dpcPct = parseFloat(dpc_percentage) || 0;
-    const result = await db.query(
+const result = await db.query(
       `INSERT INTO products (cat_id, name, description, short_desc, f_image, g_image, status, tax_id, base_price, subcategories, attributes, discounted_price, slug,
-        hsn_code, weight, dimension_length, dimension_width, dimension_height, dimension_unit, mrp_percentage, dpc_percentage)
+        hsn_code, weight, dimension_length, dimension_width, dimension_height, dimension_unit, mrp_percentage, dpc_percentage, specifications)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13,
-         $14, $15, $16, $17, $18, $19, $20, $21) RETURNING *`,
+          $14, $15, $16, $17, $18, $19, $20, $21, $22) RETURNING *`,
       [
         cat_id || null,
         name.trim(),
@@ -564,6 +582,7 @@ exports.createProduct = async (req, res) => {
         dimension_unit || null,
         mrpPct,
         dpcPct,
+        parsedSpecifications,
       ],
     );
 
@@ -1093,7 +1112,8 @@ exports.getProductByslug = async (req, res) => {
           'dimension_length', p.dimension_length,
           'dimension_width', p.dimension_width,
           'dimension_height', p.dimension_height,
-          'dimension_unit', p.dimension_unit,
+'dimension_unit', p.dimension_unit,
+          'specifications', p.specifications,
           
           -- New Stock Logic for Main Product
           'admin_stock', COALESCE((
@@ -1237,6 +1257,7 @@ exports.updateProduct = async (req, res) => {
       dimension_unit,
       mrp_percentage,
       dpc_percentage,
+      specifications,
     } = req.body;
 
     // console.log("g-image - ", req.body);
@@ -1390,6 +1411,20 @@ exports.updateProduct = async (req, res) => {
     if (dpc_percentage !== undefined) {
       updates.push(`dpc_percentage = $${paramIndex}`);
       values.push(parseFloat(dpc_percentage) || 0);
+      paramIndex++;
+    }
+
+    if (specifications !== undefined) {
+      let specValue = specifications;
+      if (typeof specifications === "string") {
+        try {
+          specValue = JSON.parse(specifications);
+        } catch {
+          specValue = null;
+        }
+      }
+      updates.push(`specifications = $${paramIndex}`);
+      values.push(specValue);
       paramIndex++;
     }
 
