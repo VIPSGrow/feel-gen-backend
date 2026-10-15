@@ -53,6 +53,24 @@ const evaluateAndUpgradeRank = async (client, userId) => {
       [rank.id],
     );
 
+    await client.query(
+      `INSERT INTO rank_achievements (user_id, rank_no, rank_name, rewards)
+       VALUES ($1, $2, $3, $4::jsonb)
+       ON CONFLICT (user_id, rank_no) DO NOTHING`,
+      [
+        userId,
+        rank.rank_no,
+        rank.rank_name,
+        JSON.stringify(
+          rewardsRes.rows.map((r) => ({
+            type: r.reward_type,
+            value: r.reward_value,
+            description: r.reward_description,
+          })),
+        ),
+      ],
+    );
+
     for (const reward of rewardsRes.rows) {
       const isCash = ["cash", "commission", "bonus"].includes(
         String(reward.reward_type || "").toLowerCase(),
@@ -102,6 +120,16 @@ const evaluateAndUpgradeRank = async (client, userId) => {
         );
       }
     }
+
+    await client.query(
+      `INSERT INTO notifications (title, message, display_type, target_role, target_id)
+       VALUES ($1, $2, 'reward', 'user', $3)`,
+      [
+        `Congratulations! You achieved ${rank.rank_name}`,
+        `You have reached the rank of ${rank.rank_name}. Check your rewards and wallet for details.`,
+        userId,
+      ],
+    );
 
     grantedRanks.push(rank.rank_name);
   }

@@ -121,7 +121,7 @@ async function generateInvoice(req, res) {
       const typeCode = orderData.user_type === "Distributor" ? "D" : "C";
 
       // Combine Frame: FS-2627-06-IN-D137
-      invoiceNo = `FS/${invoiceYearFormat}/${currentSno}`;
+      invoiceNo = `FS/${invoiceYearFormat}/${typeCode}${currentSno}`;
 
       // न्यूली जनरेटेड नंबर्स को orders टेबल में सेव करें
       await db.query(
@@ -311,7 +311,7 @@ async function downloadByEmail(req, res) {
       const typeCode = orderData.user_type === "Distributor" ? "D" : "C";
 
       // Combine Frame: FS-2627-06-IN-D137
-      invoiceNo = `FS/${invoiceYearFormat}/${currentSno}`;
+      invoiceNo = `FS/${invoiceYearFormat}/${typeCode}${currentSno}`;
 
       // न्यूली जनरेटेड नंबर्स को orders टेबल में सेव करें
       await db.query(

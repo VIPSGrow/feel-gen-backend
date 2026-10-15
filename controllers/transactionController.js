@@ -309,6 +309,25 @@ exports.withdraw = async (req, res) => {
     const userId = req.user.id;
     const { amount, remarks, pin } = req.body;
 
+    const settingRes = await db.query(
+      "SELECT setting_value FROM public.app_settings WHERE setting_key = 'transaction' LIMIT 1",
+    );
+    let txnSetting = settingRes.rows[0]?.setting_value;
+    if (typeof txnSetting === "string") {
+      try {
+        txnSetting = JSON.parse(txnSetting);
+      } catch {
+        txnSetting = null;
+      }
+    }
+    if (txnSetting?.withdraw !== true) {
+      return res.status(403).json({
+        success: false,
+        error: "Withdraw function is temporarily stopped",
+        message: "Withdraw function is temporarily stopped",
+      });
+    }
+
     // Same checks as transfer + bank details exist?
     await limitsChecker.checkTransferLimits(userId, amount);
 

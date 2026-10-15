@@ -52,6 +52,7 @@ app.use("/api/payment", require("./routes/razorpayRoute"));
 app.use("/api/roles", require("./routes/rolesRoutes"));
 app.use("/api/staff", require("./routes/staffRoutes"));
 app.use("/api/notifications", require("./routes/notificationRoutes"));
+app.use("/api/rank-achievements", require("./routes/rankAchievementRoutes"));
 app.use("/api/inventory", require("./routes/inventoryRoutes"));
 app.use("/api/reports", require("./routes/reportRoute"));
 app.use("/api/analytics", require("./routes/analyticsRoutes"));
