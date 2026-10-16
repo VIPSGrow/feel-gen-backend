@@ -287,31 +287,31 @@ exports.getDashboardData = async (req, res) => {
     const userStats = await safeQuery(
       `
       WITH distributor_stats AS (
-  SELECT
-    COUNT(*)::int as total_distributors,
-    COUNT(*) FILTER (WHERE is_active = true)::int as active_distributors,
-    COUNT(*) FILTER (WHERE is_active = false)::int as inactive_distributors,
-    COUNT(*) FILTER (WHERE kyc_status = true)::int as kyc_approved_distributors,
-    COUNT(*) FILTER (WHERE kyc_status = false)::int as kyc_pending_distributors,
-    COUNT(*) FILTER (WHERE created_at >= CURRENT_DATE)::int as new_distributors_today,
-    COUNT(*) FILTER (WHERE created_at >= DATE_TRUNC('week', CURRENT_DATE))::int as new_distributors_this_week,
-    COUNT(*) FILTER (WHERE created_at >= DATE_TRUNC('month', CURRENT_DATE))::int as new_distributors_this_month
-  FROM users WHERE role = 'Distributor' AND role_id IS null
-),
-ecom_stats AS (
-  SELECT 
-    COUNT(*)::int as total_ecom_users,
-    COUNT(*) FILTER (WHERE status = 'true')::int as active_ecom_users,
-    COUNT(*) FILTER (WHERE status = 'false')::int as inactive_ecom_users,
-    COUNT(*) FILTER (WHERE created_at >= CURRENT_DATE)::int as new_ecom_users_today,
-    COUNT(*) FILTER (WHERE created_at >= DATE_TRUNC('week', CURRENT_DATE))::int as new_ecom_users_this_week,
-    COUNT(*) FILTER (WHERE created_at >= DATE_TRUNC('month', CURRENT_DATE))::int as new_ecom_users_this_month
-  FROM ecom_user
-)
-SELECT 
-  d.*, 
-  e.* FROM distributor_stats d
-CROSS JOIN ecom_stats e;
+          SELECT
+            COUNT(*)::int as total_distributors,
+            COUNT(*) FILTER (WHERE is_active = true)::int as active_distributors,
+            COUNT(*) FILTER (WHERE is_active = false)::int as inactive_distributors,
+            COUNT(*) FILTER (WHERE kyc_status = true)::int as kyc_approved_distributors,
+            COUNT(*) FILTER (WHERE kyc_status = false)::int as kyc_pending_distributors,
+            COUNT(*) FILTER (WHERE created_at >= CURRENT_DATE)::int as new_distributors_today,
+            COUNT(*) FILTER (WHERE created_at >= DATE_TRUNC('week', CURRENT_DATE))::int as new_distributors_this_week,
+            COUNT(*) FILTER (WHERE created_at >= DATE_TRUNC('month', CURRENT_DATE))::int as new_distributors_this_month
+          FROM users WHERE role = 'Distributor' AND role_id IS null
+        ),
+        ecom_stats AS (
+          SELECT 
+            COUNT(*)::int as total_ecom_users,
+            COUNT(*) FILTER (WHERE status = 'true')::int as active_ecom_users,
+            COUNT(*) FILTER (WHERE status = 'false')::int as inactive_ecom_users,
+            COUNT(*) FILTER (WHERE created_at >= CURRENT_DATE)::int as new_ecom_users_today,
+            COUNT(*) FILTER (WHERE created_at >= DATE_TRUNC('week', CURRENT_DATE))::int as new_ecom_users_this_week,
+            COUNT(*) FILTER (WHERE created_at >= DATE_TRUNC('month', CURRENT_DATE))::int as new_ecom_users_this_month
+          FROM ecom_user
+        )
+        SELECT 
+          d.*, 
+          e.* FROM distributor_stats d
+        CROSS JOIN ecom_stats e;
       `,
       [],
       [{}],
@@ -326,8 +326,8 @@ CROSS JOIN ecom_stats e;
         COALESCE(AVG(total_amount), 0)::numeric(12,2) as avg_order_value,
         
         -- Distributor Orders Split
-        COUNT(*) FILTER (WHERE distributor_id IS NOT NULL AND order_for LIKE 'admin-distributor')::int as total_distributor_orders,
-        COALESCE(SUM(total_amount) FILTER (WHERE distributor_id IS NOT NULL), 0)::numeric(12,2) as total_distributor_revenue,
+        COUNT(*) FILTER (WHERE distributor_id IS NOT NULL  AND order_for LIKE 'admin-distributor')::int as total_distributor_orders,
+        COALESCE(SUM(total_amount) FILTER (WHERE distributor_id IS NOT NULL AND order_for LIKE 'admin-distributor'), 0)::numeric(12,2) as total_distributor_revenue,
         
         -- Ecom User Orders Split
         COUNT(*) FILTER (WHERE user_id IS NOT NULL)::int as total_ecom_orders,
