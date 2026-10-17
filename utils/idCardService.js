@@ -242,7 +242,7 @@ async function generateAndSaveIdCard({
         // Chosen below ribbon area; if it overlaps your template, tweak Y.
         ctx.fillStyle = "#1A1A1B";
         ctx.font = "bold 26px Arial";
-        ctx.fillText(dateRange, 410, 805);
+        ctx.fillText(dateRange, 430, 805);
       }
     }
 
