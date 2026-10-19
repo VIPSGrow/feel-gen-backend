@@ -307,6 +307,7 @@ exports.getProductsForDistributor = async (req, res) => {
           'cat_id', p.cat_id,
           'name', p.name,
           'description', p.description,
+          'short_desc', p.short_desc,
           'slug', p.slug,
           'f_image', p.f_image,
           'g_image', p.g_image,
