@@ -2,11 +2,8 @@ const fs = require("fs/promises");
 const path = require("path");
 const { PDFDocument, rgb, StandardFonts } = require("pdf-lib");
 const { ToWords } = require("to-words");
-// Polyfill required by @pdf-lib/fontkit UMD build in some Node setups
-// (fixes: ReferenceError: regeneratorRuntime is not defined)
 require("regenerator-runtime/runtime");
 
-// 1. Import fontkit
 const fontkit = require("@pdf-lib/fontkit");
 
 function safeSegment(input) {
@@ -14,7 +11,6 @@ function safeSegment(input) {
   return str.replace(/[^a-zA-Z0-9_-]+/g, "_").slice(0, 120);
 }
 
-// 2. Initialize it with Indian Locale configuration
 const toWords = new ToWords({
   localeCode: "en-IN",
   converterOptions: {
@@ -23,10 +19,9 @@ const toWords = new ToWords({
     ignoreZeroCurrency: false,
     doNotAddOnly: false,
     currencyOptions: {
-      // Overrides default "Rupee" to "RUPEES"
       name: "Rupee",
       plural: "Rupees",
-      symbol: "₹",
+      symbol: "Rs. ",
       fractionalUnit: {
         name: "Paisa",
         plural: "Paisa",
@@ -36,17 +31,15 @@ const toWords = new ToWords({
   },
 });
 
-// Custom Helper to transform amount to Indian Currency English words format
-// 3. Updated clean wrapper function
 function convertAmountToWords(amount) {
   try {
-    // toWords.convert(100268.00) outputs: "One Lakh Two Hundred Sixty Eight Rupees Only"
-    return toWords.convert(Number(amount)).toUpperCase();
+    return toWords.convert(Number(amount || 0));
   } catch (e) {
     console.error("Error converting number to words:", e);
     return "N/A";
   }
 }
+
 async function ensureDir(dirPath) {
   await fs.mkdir(dirPath, { recursive: true });
 }
@@ -61,29 +54,31 @@ async function fileExists(filePath) {
 }
 
 async function getOrCreateInvoicePdf({ order, force = false }) {
-  // console.log("Generating invoice PDF for order:", order);
   const appUrl = process.env.APP_URL || "";
   const orderIdStr = String(order.id || "");
   const u = safeSegment(order.user_id || order.distributor_id || "guest");
   const i = safeSegment(orderIdStr);
 
   const orderDate = order.created_at
-    ? new Date(order.created_at).toISOString().split("T")[0]
+    ? new Date(order.created_at)
+        .toLocaleString("en-GB", {
+          day: "2-digit",
+          month: "short",
+          year: "numeric",
+          hour: "2-digit",
+          minute: "2-digit",
+          second: "2-digit",
+          hour12: false,
+        })
+        .replace(/ /g, "/")
+        .toUpperCase()
     : new Date().toISOString().split("T")[0];
 
   const invoiceKey = order.order_id ? safeSegment(order.order_id) : i;
 
-  const uploadDir = path.join(
-    process.cwd(),
-    "uploads",
-    "invoices",
-    u,
-    invoiceKey,
-  );
+  const uploadDir = path.join(process.cwd(), "uploads", "invoices", u, invoiceKey);
   const destPdfPath = path.join(uploadDir, "invoice.pdf");
-  const publicUrl = `${appUrl}/uploads/invoices/${u}/${encodeURIComponent(
-    invoiceKey,
-  )}/invoice.pdf`;
+  const publicUrl = `${appUrl}/uploads/invoices/${u}/${encodeURIComponent(invoiceKey)}/invoice.pdf`;
 
   const exists = await fileExists(destPdfPath);
   if (exists && !force) {
@@ -93,87 +88,64 @@ async function getOrCreateInvoicePdf({ order, force = false }) {
   await ensureDir(uploadDir);
 
   const pdfDoc = await PDFDocument.create();
-
-  // 2. Register fontkit instance to your PDF document
   pdfDoc.registerFontkit(fontkit);
 
-  // 3. Load and embed your Hindi Font file
-  // Adjust this path to wherever you store your custom font
-  const fontPath = path.join(
-    process.cwd(),
-    "assets",
-    "fonts",
-    "NotoSansDevanagari-Regular.ttf",
-  );
-  const fontBytes = await fs.readFile(fontPath);
-  const customHindiFont = await pdfDoc.embedFont(fontBytes);
-
-  let embeddedWatermark = null;
-  let embeddedPaymentQR = null;
-  let embeddedWebsiteQR = null;
-
-  // Load Watermark PNG
+  const fontPath = path.join(process.cwd(), "assets", "fonts", "NotoSansDevanagari-Regular.ttf");
+  let customHindiFont = null;
   try {
-    const watermarkPath = path.join(
-      process.cwd(),
-      "assets",
-      "image",
-      "image4.png",
-    );
-    const watermarkBytes = await fs.readFile(watermarkPath);
-    embeddedWatermark = await pdfDoc.embedPng(watermarkBytes);
-  } catch (err) {
-    console.warn("Watermark image missing at - ", err);
+    const fontBytes = await fs.readFile(fontPath);
+    customHindiFont = await pdfDoc.embedFont(fontBytes);
+  } catch (e) {
+    console.warn("Hindi font missing, falling back to standard fonts.");
   }
 
-  // Load Payment QR PNG
-  try {
-    const paymentQRPath = path.join(
-      process.cwd(),
-      "assets",
-      "image",
-      "bank.png",
-    );
-    const paymentQRBytes = await fs.readFile(paymentQRPath);
-    embeddedPaymentQR = await pdfDoc.embedPng(paymentQRBytes);
-  } catch (err) {
-    console.warn("Payment QR missing at /assets/image/payment-qr.png");
-  }
-
-  // Load Website QR PNG
-  try {
-    const websiteQRPath = path.join(
-      process.cwd(),
-      "assets",
-      "image",
-      "website.png",
-    );
-    const websiteQRBytes = await fs.readFile(websiteQRPath);
-    embeddedWebsiteQR = await pdfDoc.embedPng(websiteQRBytes);
-  } catch (err) {
-    console.warn("Website QR missing at /assets/image/website-qr.png");
-  }
-
-  const page = pdfDoc.addPage([595.27, 841.89]);
   const fontHelvetica = await pdfDoc.embedFont(StandardFonts.Helvetica);
   const fontHelveticaBold = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
 
-  // =================================================================
-  // 3. BACKGROUND LAYER LAYER: RENDER WATERMARK FIRST
-  // =================================================================
+  // Assets load
+  let embeddedWatermark = null;
+  let embeddedPaymentQR = null;
+  let embeddedWebsiteQR = null;
+  let embeddedStamp = null;
+
+  try {
+    const watermarkBytes = await fs.readFile(path.join(process.cwd(), "assets", "image", "image4.png"));
+    embeddedWatermark = await pdfDoc.embedPng(watermarkBytes);
+  } catch (err) {}
+
+  try {
+    const paymentQRBytes = await fs.readFile(path.join(process.cwd(), "assets", "image", "bank.png"));
+    embeddedPaymentQR = await pdfDoc.embedPng(paymentQRBytes);
+  } catch (err) {}
+
+  try {
+    const websiteQRBytes = await fs.readFile(path.join(process.cwd(), "assets", "image", "website.png"));
+    embeddedWebsiteQR = await pdfDoc.embedPng(websiteQRBytes);
+  } catch (err) {}
+
+  // Load Stamp Image
+  try {
+    const stampBytes = await fs.readFile(path.join(process.cwd(), "assets", "image", "stamp.png"));
+    embeddedStamp = await pdfDoc.embedPng(stampBytes);
+  } catch (err) {
+    console.warn("Stamp image missing at /assets/image/stamp.png");
+  }
+
+  const page = pdfDoc.addPage([595.27, 841.89]);
+
+  // Background Watermark
   if (embeddedWatermark) {
-    const watermarkWidth = 320;
-    const watermarkHeight = 320;
+    const wmWidth = 320;
+    const wmHeight = 320;
     page.drawImage(embeddedWatermark, {
-      x: (page.getWidth() - watermarkWidth) / 2,
-      y: (page.getHeight() - watermarkHeight) / 2 + 30, // Offset vertically to align with image template center
-      width: watermarkWidth,
-      height: watermarkHeight,
-      opacity: 0.1, // Transparent, doesn't clash with table text
+      x: (page.getWidth() - wmWidth) / 2,
+      y: (page.getHeight() - wmHeight) / 2 - 30,
+      width: wmWidth,
+      height: wmHeight,
+      opacity: 0.12,
     });
   }
 
-  // 4. Update helper helper to seamlessly fallback or explicitly use custom fonts
   const drawText = (
     text,
     x,
@@ -185,11 +157,11 @@ async function getOrCreateInvoicePdf({ order, force = false }) {
   ) => {
     if (text !== undefined && text !== null) {
       let chosenFont = isBold ? fontHelveticaBold : fontHelvetica;
-      if (useHindiFont) {
-        chosenFont = customHindiFont; // Swaps out to Hindi mapping system
-      }
+      if (useHindiFont && customHindiFont) chosenFont = customHindiFont;
 
-      page.drawText(String(text), {
+      const sanitized = String(text).replace(/₹/g, "Rs. ");
+
+      page.drawText(sanitized, {
         x,
         y,
         size,
@@ -208,14 +180,7 @@ async function getOrCreateInvoicePdf({ order, force = false }) {
     });
   };
 
-  const drawRect = (
-    x,
-    y,
-    width,
-    height,
-    thickness = 0.5,
-    color = rgb(0, 0, 0),
-  ) => {
+  const drawRect = (x, y, width, height, thickness = 0.5, color = rgb(0, 0, 0)) => {
     page.drawRectangle({
       x,
       y,
@@ -227,96 +192,64 @@ async function getOrCreateInvoicePdf({ order, force = false }) {
     });
   };
 
-  // Main Outer Box Frame
-  drawRect(30, 40, 535, 765, 0.75, rgb(0.2, 0.2, 0.2));
+  const leftX = 30;
+  const rightX = 565;
+  const totalW = rightX - leftX;
+  drawRect(leftX, 35, totalW, 775, 1, rgb(0, 0, 0));
 
-  // --- HEADER BRANDING ---
-  drawText(
-    "FEEL SAFE PRIVATE LIMITED",
-    145,
-    780,
-    18,
-    true,
-    rgb(0.42, 0.16, 0.54),
-  );
-  drawText("Original For Recipient", 475, 782, 7.5, true, rgb(50/255,205/255,50/255));
+  // --- HEADER SECTION ---
+  drawText("FEEL SAFE PRIVATE LIMITED", 130, 782, 20, true, rgb(0.42, 0.16, 0.54));
+  drawText("Original For Recipient", 445, 784, 8, true, rgb(0, 0.6, 0.2));
 
-  drawText(
-    "OFFICE ADDRESS: Pole No.17, Kharkhari Nahar, Near MCD School,",
-    155,
-    768,
-    8,
-    true,
-  );
-  drawText(
-    "Najafgarh, South West, New Delhi, Delhi – 110043.",
-    200,
-    757,
-    8,
-    true,
-  );
-  drawText(
-    "27x7 Helpline no. +91 9013499385 | Email: support@feelsafeco.in | Website: feelsafeco.in",
-    130,
-    745,
-    8,
-    false,
-    rgb(0, 0, 1),
-  );
+  drawText("OFFICE ADDRESS: Pole No.17, Kharkhari Nahar, Near MCD School,", 150, 770, 7.5, true);
+  drawText("Najafgarh, South West, New Delhi, Delhi - 110043.", 200, 760, 7.5, true);
+  drawText("27x7 Helpline no. +91 9013499385 | Email: support@feelsafeco.in | Website: feelsafeco.in", 125, 749, 7.5, false, rgb(0, 0, 0.8));
 
-  drawText("CIN- U13996DL2026PTC465812", 440, 733, 8, true);
-  drawText("BILL OF SUPPLY", 255, 725, 12, true, rgb(0.42, 0.16, 0.54));
-  drawText("GSTIN:- 07AAHCF0020FIZA", 440, 721, 8, true);
+  drawText("CIN- U13996DL2026PTC465812", 420, 737, 7.5, true);
+  drawText("BILL OF SUPPLY", 240, 730, 11, true, rgb(0.42, 0.16, 0.54));
+  drawText("GSTIN:- 07AAHCF0020F1ZA", 420, 725, 7.5, true);
 
   // --- METADATA SECTION ---
-  let metaY = 712;
-  drawLine(30, metaY, 565, metaY, 0.5);
-  drawLine(310, metaY, 310, metaY - 45, 0.5);
+  let curY = 716;
+  drawLine(leftX, curY, rightX, curY, 0.75);
 
-  drawText("Sakhi Distributor ID No.:", 35, metaY - 11, 8, true);
-  drawText(order.distributor.referral_id || "N/A", 150, metaY - 11, 8);
-  drawLine(30, metaY - 15, 310, metaY - 15, 0.5);
+  const midX = 310;
+  drawLine(midX, curY, midX, curY - 45, 0.5);
 
-  drawText("Order No:", 35, metaY - 26, 8, true);
-  drawText(order.order_id || "-", 85, metaY - 26, 8);
-  drawLine(30, metaY - 30, 310, metaY - 30, 0.5);
+  drawText("Sakhi Distributor ID No.:", 33, curY - 11, 7.5, true);
+  drawText(order.distributor?.referral_id || order.referral_id || "N/A", 160, curY - 11, 8, true);
+  drawLine(leftX, curY - 15, midX, curY - 15, 0.5);
 
-  drawText("Receipt No:", 35, metaY - 41, 8, true);
-  drawText(order.receipt_no || order.order_id || orderIdStr, 85, metaY - 41, 8);
+  drawText("Order No:", 33, curY - 26, 7.5, true);
+  drawText(order.order_id || "-", 160, curY - 26, 8, true);
+  drawLine(leftX, curY - 30, midX, curY - 30, 0.5);
 
-  drawText("Invoice Date:", 315, metaY - 11, 8, true);
-  drawLine(310, metaY - 15, 565, metaY - 15, 0.5);
-  drawText(orderDate, 410, metaY - 11, 8);
+  drawText("Receipt No:", 33, curY - 41, 7.5, true);
+  drawText(order.receipt_no || order.order_id || orderIdStr, 160, curY - 41, 8, true);
 
-  drawText("Invoice No:", 315, metaY - 26, 8, true);
-  drawText(
-    order.invoice_no || order.order_id || orderIdStr,
-    410,
-    metaY - 26,
-    8,
-  );
-  drawLine(310, metaY - 30, 565, metaY - 30, 0.5);
-  drawText("State Name Code:", 315, metaY - 41, 8, true);
-  drawText(order.state_name_code || "N/A", 410, metaY - 41, 8);
+  drawText("Invoice Date:", midX + 5, curY - 11, 7.5, true);
+  drawText(orderDate, midX + 105, curY - 11, 8, true);
+  drawLine(midX, curY - 15, rightX, curY - 15, 0.5);
 
-  metaY -= 45;
-  drawLine(30, metaY, 565, metaY, 0.5);
+  drawText("Invoice No:", midX + 5, curY - 26, 7.5, true);
+  drawText(order.invoice_no || order.order_id || orderIdStr, midX + 105, curY - 26, 8, true);
+  drawLine(midX, curY - 30, rightX, curY - 30, 0.5);
 
-  // --- SHIPPING & BILLING ADDRESS ---
-  drawLine(300, metaY, 300, metaY - 120, 0.5);
+  drawText("State Name Code:", midX + 5, curY - 41, 7.5, true);
+  drawText(order.state_name_code || "07", midX + 105, curY - 41, 8, true);
 
-  drawText("Residential Address:", 35, metaY - 12, 9, true, rgb(0.2, 0.4, 0.6));
-  drawText(
-    "Bill & Shipping Address:",
-    305,
-    metaY - 12,
-    9,
-    true,
-    rgb(0.2, 0.4, 0.6),
-  );
-  drawLine(30, metaY - 16, 565, metaY - 16, 0.5);
+  curY -= 45;
+  drawLine(leftX, curY, rightX, curY, 0.75);
 
-  const labels = [
+  // --- ADDRESS SECTION ---
+  const addrHeight = 100;
+  drawLine(midX, curY, midX, curY - addrHeight, 0.5);
+
+  drawText("Buyer (Bill to):", 35, curY - 12, 8.5, true, rgb(0.1, 0.35, 0.7));
+  drawText("Consignee (Ship to):", midX + 5, curY - 12, 8.5, true, rgb(0.1, 0.35, 0.7));
+  drawLine(leftX, curY - 16, rightX, curY - 16, 0.5);
+
+  const addressLabels = [
     "Name:",
     "Address:",
     "State:",
@@ -325,7 +258,6 @@ async function getOrCreateInvoicePdf({ order, force = false }) {
     "Email ID:",
     "GSTIN:",
   ];
-  let labelOffset = metaY - 26;
 
   const shipping = order.shipping_address || {};
   const billing = order.billing_address || shipping;
@@ -350,232 +282,176 @@ async function getOrCreateInvoicePdf({ order, force = false }) {
     shipping.gstin || "",
   ];
 
-  for (let idx = 0; idx < labels.length; idx++) {
-    drawText(labels[idx], 35, labelOffset, 8);
-    drawText(String(leftVals[idx]), 85, labelOffset, 8);
+  let addrRowY = curY - 25;
+  for (let idx = 0; idx < addressLabels.length; idx++) {
+    drawText(addressLabels[idx], 35, addrRowY, 7.5);
+    drawText(String(leftVals[idx] || "").slice(0, 38), 85, addrRowY, 7.5);
 
-    drawText(labels[idx], 305, labelOffset, 8);
-    drawText(String(rightVals[idx]), 355, labelOffset, 8);
+    drawText(addressLabels[idx], midX + 5, addrRowY, 7.5);
+    drawText(String(rightVals[idx] || "").slice(0, 38), midX + 55, addrRowY, 7.5);
 
-    drawLine(
-      30,
-      labelOffset - 3,
-      565,
-      labelOffset - 3,
-      0.25,
-      rgb(0.8, 0.8, 0.8),
-    );
-    labelOffset -= 13;
+    drawLine(leftX, addrRowY - 2.5, rightX, addrRowY - 2.5, 0.25, rgb(0.7, 0.7, 0.7));
+    addrRowY -= 12;
   }
 
-  metaY -= 120;
-  drawLine(30, metaY, 565, metaY, 0.5);
+  curY -= addrHeight;
+  drawLine(leftX, curY, rightX, curY, 0.75);
 
-  // --- TRANSACTION SUMMARY TABLE ---
-  let tableY = metaY - 15;
-  drawText(
-    "Transaction Summary",
-    240,
-    tableY + 4,
-    10,
-    true,
-    rgb(0.42, 0.16, 0.54),
-  );
-  drawLine(30, tableY, 565, tableY, 0.5);
+  // --- TRANSACTION SUMMARY HEADER ---
+  drawText("Transaction Summary", 240, curY - 10, 9, true, rgb(0.42, 0.16, 0.54));
+  curY -= 14;
+  drawLine(leftX, curY, rightX, curY, 0.5);
 
-  const cols = [30, 65, 120, 170, 205, 250, 305, 375, 445, 515, 565];
+  const tCols = [leftX, 65, 205, 255, 305, 350, 400, 450, rightX];
 
-  drawText("S. No.", 33, tableY - 16, 8, true);
-  drawText("Product", 73, tableY - 11, 8, true);
-  drawText("Details", 74, tableY - 21, 8, true);
-  drawText("HSN code", 124, tableY - 16, 8, true);
-  drawText("QTY", 177, tableY - 16, 8, true);
-  drawText("Unit", 215, tableY - 11, 8, true);
-  drawText("Price", 214, tableY - 21, 8, true);
-  drawText("Net", 267, tableY - 11, 8, true);
-  drawText("Amount", 260, tableY - 21, 8, true);
+  drawText("S. No.", 33, curY - 11, 7, true);
+  drawText("Description of Goods", 100, curY - 11, 7, true);
+  drawText("HSN/SAC", 212, curY - 11, 7, true);
+  drawText("MRP./", 268, curY - 8, 6.5, true);
+  drawText("Marginal", 264, curY - 16, 6.5, true);
+  drawText("Quantity", 312, curY - 8, 6.5, true);
+  drawText("package", 312, curY - 16, 6.5, true);
+  drawText("Rate", 368, curY - 11, 7, true);
+  drawText("Piece/", 413, curY - 8, 6.5, true);
+  drawText("package", 410, curY - 16, 6.5, true);
+  drawText("Amount", 488, curY - 11, 7, true);
 
-  drawText("CGST", 332, tableY - 10, 8, true);
-  drawLine(305, tableY - 14, 375, tableY - 14, 0.5);
-  drawText("Rate", 311, tableY - 23, 7, true);
-  drawText("Amt.", 344, tableY - 23, 7, true);
-  drawLine(340, tableY - 14, 340, tableY - 26, 0.5);
+  const tableHeaderBottom = curY - 20;
+  drawLine(leftX, tableHeaderBottom, rightX, tableHeaderBottom, 0.5);
 
-  drawText("SGST", 402, tableY - 10, 8, true);
-  drawLine(375, tableY - 14, 445, tableY - 14, 0.5);
-  drawText("Rate", 381, tableY - 23, 7, true);
-  drawText("Amt.", 414, tableY - 23, 7, true);
-  drawLine(410, tableY - 14, 410, tableY - 26, 0.5);
-
-  drawText("IGST", 472, tableY - 10, 8, true);
-  drawLine(445, tableY - 14, 515, tableY - 14, 0.5);
-  drawText("Rate", 451, tableY - 23, 7, true);
-  drawText("Amt.", 484, tableY - 23, 7, true);
-  drawLine(480, tableY - 14, 480, tableY - 26, 0.5);
-
-  drawText("Grand Total", 520, tableY - 16, 8, true);
-
-  tableY -= 26;
-  drawLine(30, tableY, 565, tableY, 0.5);
-
+  // --- PRODUCT ROWS ---
   const productsList = order.products || [];
-  let totalNetAmount = 0;
-  let totalGrandAmount = 0;
+  let itemY = tableHeaderBottom;
+  let totalQtyPackages = 0;
+  let totalPieces = 0;
+  let grossAmount = 0;
 
-  productsList.forEach((item, index) => {
-    const qty = Number(item.qty || 1);
-    const price = Number(item.unit_price || item.price || 0);
-    const netAmt = price * qty;
+  const minRows = 7;
+  const rowCount = Math.max(productsList.length, minRows);
 
-    const isInterstate = String(shipping.state || "").toLowerCase() !== "delhi";
-    const taxRate = Number(item.variant_details?.tax_data?.percentage || 0);
+  for (let idx = 0; idx < rowCount; idx++) {
+    const item = productsList[idx];
+    const rowY = itemY - 13;
 
-    let cgstR = "-",
-      cgstA = "-",
-      sgstR = "-",
-      sgstA = "-",
-      igstR = "-",
-      igstA = "-";
-    let taxAmount = netAmt * (taxRate / 100);
+    if (item) {
+      const qty = Number(item.quantity_packages || item.qty || 1);
+      const rate = Number(item.rate || item.unit_price || item.price || 0);
+      const mrp = Number(item.mrp || rate);
+      const pieces = Number(item.pieces_per_package || item.piece_count || 10);
+      const amount = qty * rate;
 
-    if (isInterstate) {
-      igstR = `${taxRate}%`;
-      igstA = taxAmount.toFixed(2);
+      totalQtyPackages += qty;
+      totalPieces += qty * pieces;
+      grossAmount += amount;
+
+      drawText(String(idx + 1) + ".", 45, rowY, 7.5);
+      drawText(String(item.product_name || item.name || "Product").slice(0, 30), 70, rowY, 7.5);
+      drawText(String(item.hsn_sac || item.variant_sku || "96190010"), 212, rowY, 7.5);
+      drawText(`Rs. ${mrp.toFixed(2)}`, 260, rowY, 7.5);
+      drawText(String(qty), 325, rowY, 7.5);
+      drawText(`Rs. ${rate.toFixed(2)}`, 355, rowY, 7.5);
+      drawText(String(pieces), 422, rowY, 7.5);
+      drawText(`Rs. ${amount.toFixed(2)}`, 485, rowY, 7.5);
     } else {
-      cgstR = `${taxRate / 2}%`;
-      cgstA = (taxAmount / 2).toFixed(2);
-      sgstR = `${taxRate / 2}%`;
-      sgstA = (taxAmount / 2).toFixed(2);
+      drawText(String(idx + 1) + ".", 45, rowY, 7.5);
     }
 
-    const itemGrandTotal = netAmt + taxAmount;
-    totalNetAmount += netAmt;
-    totalGrandAmount += itemGrandTotal;
-
-    drawText(String(index + 1), 43, tableY - 14, 8);
-    drawText(
-      String(item.product_name || "Product").slice(0, 10),
-      68,
-      tableY - 14,
-      7.5,
-    );
-    drawText(String(item.variant_sku || "5407"), 123, tableY - 14, 7.5);
-    drawText(String(qty), 182, tableY - 14, 8);
-    drawText(price.toFixed(2), 210, tableY - 14, 8);
-    drawText(netAmt.toFixed(2), 255, tableY - 14, 8);
-
-    drawText(cgstR, 310, tableY - 14, 7.5);
-    drawText(cgstA, 343, tableY - 14, 7.5);
-    drawText(sgstR, 380, tableY - 14, 7.5);
-    drawText(sgstA, 413, tableY - 14, 7.5);
-    drawText(igstR, 450, tableY - 14, 7.5);
-    drawText(igstA, 483, tableY - 14, 7.5);
-
-    drawText(itemGrandTotal.toFixed(2), 520, tableY - 14, 8, true);
-
-    tableY -= 20;
-    drawLine(30, tableY, 565, tableY, 0.25, rgb(0.8, 0.8, 0.8));
-  });
-
-  cols.forEach((x) => drawLine(x, metaY - 15, x, tableY, 0.5));
-
-  // shipping_charges
-  tableY -= 20;
-  drawLine(30, tableY, 565, tableY, 0.5);
-
-  const shippingCharges = Number(order.shipping_charges || 0);
-
-  totalNetAmount += shippingCharges;
-  totalGrandAmount += shippingCharges;
-
-  drawText("Shipping Charge", 75, tableY + 8, 8, true);
-  drawText(shippingCharges.toFixed(2), 255, tableY + 8, 8, true);
-  drawText(shippingCharges.toFixed(2), 520, tableY + 8, 8, true);
-
-  // --- TOTAL ROW ---
-  drawText("Grand Total", 75, tableY - 14, 8, true);
-  drawText(totalNetAmount.toFixed(2), 255, tableY - 14, 8, true);
-  drawText(totalGrandAmount.toFixed(2), 520, tableY - 14, 8, true);
-
-  tableY -= 20;
-  drawLine(30, tableY, 565, tableY, 0.5);
-
-  drawLine(340, tableY, 340, tableY - 20, 0.5);
-  drawLine(515, tableY, 515, tableY - 20, 0.5);
-  drawText("Invoice Value (In Words)", 35, tableY - 10, 8, true);
-
-  const wordsText = convertAmountToWords(totalGrandAmount);
-  // Wrap text neatly if it gets too long for the structural grid boundary (max 300px wide)
-  if (wordsText.length > 55) {
-    drawText(wordsText.slice(0, 55), 35, tableY - 16, 6.5, false);
-    // extend down slightly if a wrap occurs
-  } else {
-    drawText(wordsText, 35, tableY - 17, 6.5, false, rgb(0.3, 0.3, 0.3));
+    itemY -= 16;
   }
 
-  drawText("Invoice Total", 345, tableY - 14, 8, true);
-  drawText(totalGrandAmount.toFixed(2), 520, tableY - 14, 8, true);
+  tCols.forEach((colX) => drawLine(colX, curY, colX, itemY, 0.5));
+  drawLine(leftX, itemY, rightX, itemY, 0.5);
 
-  tableY -= 20;
-  drawLine(30, tableY, 565, tableY, 0.5);
+  // --- GRAND TOTAL ROW ---
+  drawText("Grand Total", 170, itemY - 11, 8, true);
+  drawText(String(totalQtyPackages), 325, itemY - 11, 8, true);
+  drawText(String(totalPieces), 422, itemY - 11, 8, true);
+  drawText(`Rs. ${grossAmount.toFixed(2)}`, 485, itemY - 11, 8, true);
 
-  // --- CORPORATE BANKING INFO & HINDI TEXT FIX ---
-  let bankY = tableY - 15;
-  drawText("Account Holder: FEEL SAFE PRIVATE LIMITED", 35, bankY, 9, true);
-  drawText("Account Number: 50200120760164", 35, bankY - 13, 9, true);
-  drawText("IFSC: HDFC0000438", 35, bankY - 26, 9, true);
-  drawText("Branch: NAJAFGARH", 35, bankY - 39, 9, true);
-  drawText("Account Type: Current Account", 35, bankY - 52, 9, true);
+  drawLine(leftX, itemY - 16, rightX, itemY - 16, 0.5);
+  drawLine(305, itemY, 305, itemY - 16, 0.5);
+  drawLine(350, itemY, 350, itemY - 16, 0.5);
+  drawLine(400, itemY, 400, itemY - 16, 0.5);
+  drawLine(450, itemY, 450, itemY - 16, 0.5);
+  itemY -= 16;
 
-  
-  // Dynamically Draw Payment QR Image or fall back to an outline placeholder
+  // --- COUPONS ROW ---
+  const couponDiscount = Number(order.coupon_discount || order.discount_amount || 0);
+  const couponCode = order.coupon_code || (couponDiscount > 0 ? "COUPON APPLIED" : "-");
+  const couponPercentage = order.coupon_percentage ? `${order.coupon_percentage}%` : "";
+
+  drawText("Coupons:- " + (couponDiscount > 0 ? "Yes" : "No"), 35, itemY - 11, 7.5, true, rgb(0, 0.5, 0.2));
+  if (couponDiscount > 0) {
+    drawText(couponCode, 150, itemY - 11, 7.5, true, rgb(0, 0.5, 0.2));
+    drawText(couponPercentage, 210, itemY - 11, 7.5, true, rgb(0, 0.5, 0.2));
+  }
+  drawLine(450, itemY, 450, itemY - 16, 0.5);
+  drawText("-", 470, itemY - 11, 8, false, rgb(0, 0.5, 0.2));
+  drawText(couponDiscount.toFixed(2), 505, itemY - 11, 7.5, true, rgb(0, 0.5, 0.2));
+
+  drawLine(leftX, itemY - 16, rightX, itemY - 16, 0.5);
+  itemY -= 16;
+
+  // --- TAX EXEMPT ROW ---
+  const finalPayable = Number(order.final_amount || (grossAmount - couponDiscount) + Number(order.shipping_charges || 0));
+  drawText("Sanitary Pad HSN/SAC 96190010 TAX RATE EXEMPT", 175, itemY - 11, 7.5, true, rgb(0.85, 0.1, 0.1));
+  drawLine(450, itemY, 450, itemY - 16, 0.5);
+  drawText(finalPayable.toFixed(2), 505, itemY - 11, 8, true);
+
+  drawLine(leftX, itemY - 16, rightX, itemY - 16, 0.5);
+  itemY -= 16;
+
+  // --- AMOUNT IN WORDS + EO&E ---
+  const wordsVal = convertAmountToWords(finalPayable);
+  drawText("Amount Chargeable (in words) INR " + wordsVal, 35, itemY - 11, 7.5, true);
+  drawLine(470, itemY, 470, itemY - 16, 0.5);
+  drawText("E. & O.E", 495, itemY - 11, 7.5, true);
+
+  drawLine(leftX, itemY - 16, rightX, itemY - 16, 0.5);
+  itemY -= 16;
+
+  // --- BANK DETAILS & QR CODES ROW ---
+  const bankBlockH = 55;
+  const qrDivider1 = 300;
+  const qrDivider2 = 390;
+  const qrDivider3 = 470;
+
+  drawLine(qrDivider1, itemY, qrDivider1, itemY - bankBlockH, 0.5);
+  drawLine(qrDivider2, itemY, qrDivider2, itemY - bankBlockH, 0.5);
+  drawLine(qrDivider3, itemY, qrDivider3, itemY - bankBlockH, 0.5);
+
+  drawText("Account Holder: FEEL SAFE PRIVATE LIMITED,", 35, itemY - 12, 7.5, true);
+  drawText("Account Number: 50200120760164, IFSC: HDFC0000438,", 35, itemY - 24, 7.5, true);
+  drawText("Branch: NAJAFGARH, Account Type: Current Account,", 35, itemY - 36, 7.5, true);
+
+  // Payment QR
   if (embeddedPaymentQR) {
     page.drawImage(embeddedPaymentQR, {
-      x: 345,
-      y: bankY - 52,
-      width: 65,
-      height: 65,
+      x: qrDivider1 + 10,
+      y: itemY - bankBlockH + 12,
+      width: 45,
+      height: 40,
     });
-    drawText("Payment QR Code", 343, bankY - 62, 7, true, rgb(0, 0, 1));
-  } else {
-    drawRect(340, bankY - 60, 75, 70, 0.5);
-    drawText(
-      "[No Payment QR]",
-      346,
-      bankY - 30,
-      6.5,
-      false,
-      rgb(0.5, 0.5, 0.5),
-    );
-    drawText("Payment QR Code", 343, bankY - 70, 7, true, rgb(0, 0, 1));
+    drawText("Payment QR Code", qrDivider1 + 5, itemY - bankBlockH + 4, 6, true, rgb(0.1, 0.35, 0.7));
   }
 
-  // Dynamically Draw Website QR Image or fall back to an outline placeholder
+  // Website QR
   if (embeddedWebsiteQR) {
     page.drawImage(embeddedWebsiteQR, {
-      x: 455,
-      y: bankY - 52,
-      width: 65,
-      height: 65,
+      x: qrDivider2 + 15,
+      y: itemY - bankBlockH + 12,
+      width: 45,
+      height: 40,
     });
-    drawText("Website QR", 468, bankY - 62, 7, true, rgb(0, 0, 1));
-  } else {
-    drawRect(450, bankY - 60, 75, 70, 0.5);
-    drawText(
-      "[No Website QR]",
-      457,
-      bankY - 30,
-      6.5,
-      false,
-      rgb(0.5, 0.5, 0.5),
-    );
-    drawText("Website QR", 468, bankY - 70, 7, true, rgb(0, 0, 1));
+    drawText("Website QR", qrDivider2 + 20, itemY - bankBlockH + 4, 6, true, rgb(0.1, 0.35, 0.7));
   }
 
-  tableY -= 95;
-  drawLine(30, tableY, 565, tableY, 0.5);
+  drawLine(leftX, itemY - bankBlockH, rightX, itemY - bankBlockH, 0.5);
+  itemY -= bankBlockH;
 
-  // --- TERMS AND CONDITIONS ---
+  // --- DECLARATION SECTION ---
+  drawText("Declaration", 60, itemY - 10, 8, true);
+
   const disclaimers = [
     "Returns: Due to hygiene standards, goods once sold cannot be returned. Replacement is available only for manufacturing defects reported within 3 days of delivery.",
     "Video Proof: To claim a replacement, a clear and unedited unboxing video and photos of the package must be emailed to support@feelsafeco.in.",
@@ -587,53 +463,46 @@ async function getOrCreateInvoicePdf({ order, force = false }) {
     "Digital Bill: This is a computer-generated document, so it is legally valid without any physical signature.",
   ];
 
-  let discY = tableY - 12;
-  drawText("Declaration", 35, discY, 9, true);
-  discY = discY - 10;
-  disclaimers.forEach((line) => {
-    if (line.length > 130) {
-      drawText(
-        "• " + line.slice(0, 130),
-        40,
-        discY,
-        6.5,
-        false,
-        rgb(0.2, 0.2, 0.2),
-      );
-      discY -= 9;
-      drawText(line.slice(130), 47, discY, 6.5, false, rgb(0.2, 0.2, 0.2));
+  let discY = itemY - 22;
+  disclaimers.forEach((line, dIdx) => {
+    drawText(`${dIdx + 1}.`, 45, discY, 6, true);
+    if (line.length > 135) {
+      drawText(line.slice(0, 135), 58, discY, 7.8, false, rgb(0.2, 0.2, 0.2));
+      discY -= 7.5;
+      drawText(line.slice(135), 58, discY, 7.8, false, rgb(0.2, 0.2, 0.2));
     } else {
-      drawText("• " + line, 40, discY, 6.5, false, rgb(0.2, 0.2, 0.2));
+      drawText(line, 58, discY, 7.8, false, rgb(0.2, 0.2, 0.2));
     }
-    discY -= 9;
+    discY -= 8;
   });
 
-  // --- HELP BOX FOOTER NOTE ---
-  drawRect(40, 48, 515, 26, 0.5);
-  drawText(
-    "Note: Please save/print this receipt for future reference. For assistance under the Feel Safe Sakhi Yojana, visit feelsafeco.in",
-    45,
-    62,
-    7.5,
-    true,
-    rgb(0.7, 0.1, 0.1),
-  );
-  drawText(
-    "or mail us at support@feelsafeco.in +91 9013499385",
-    45,
-    52,
-    7.5,
-    true,
-    rgb(0, 0, 1),
-  );
+  // --- BOTTOM BOXES ---
+  const bottomBoxY = 45;
+  const bottomBoxH = 46;
 
-  drawText(
-    "This is a computer generated document. No signature is required.",
-    195,
-    12,
-    8,
-    true,
-  );
+  // Note Box
+  drawRect(65, bottomBoxY, 255, bottomBoxH, 0.5);
+  drawText("Note:", 180, bottomBoxY + 34, 7.5, true, rgb(0.8, 0.1, 0.1));
+  drawText("Please save/print this receipt for future reference. For assistance under the", 75, bottomBoxY + 22, 6, false);
+  drawText("Feel Safe Sakhi Yojana, visit feelsafeco.in or mail us at support@feelsafeco.in", 72, bottomBoxY + 12, 6, false);
+  drawText("+91 9013499385", 170, bottomBoxY + 3, 6, true);
+
+  // Authorised Signatory Box with Stamp
+  drawRect(375, bottomBoxY, 135, bottomBoxH, 0.5);
+  drawText("for Feel Safe Private Limited", 382, bottomBoxY + 35, 7, true);
+
+  if (embeddedStamp) {
+    const stampW = 28;
+    const stampH = 28;
+    page.drawImage(embeddedStamp, {
+      x: 375 + (135 - stampW) / 2, // Center horizontally in the box
+      y: bottomBoxY + 13,
+      width: stampW,
+      height: stampH,
+    });
+  }
+
+  drawText("Authorised Signatory", 400, bottomBoxY + 4, 7, true);
 
   const finalPdfBytes = await pdfDoc.save();
   await fs.writeFile(destPdfPath, finalPdfBytes);
