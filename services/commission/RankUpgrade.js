@@ -101,7 +101,6 @@ const evaluateAndUpgradeRank = async (client, userId) => {
         await client.query(
           `UPDATE wallets
            SET total_amount = COALESCE(total_amount, 0) + $1,
-               withdrawable_amount = COALESCE(withdrawable_amount, 0) + $1,
                updated_at = CURRENT_TIMESTAMP
            WHERE user_id = $2`,
           [rewardAmount, userId],

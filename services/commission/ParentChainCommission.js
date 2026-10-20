@@ -1,5 +1,3 @@
-const HOLDING_MIN_FALLBACK = 5;
-
 async function ensureWalletFor(client, userId) {
   await client.query(
     `INSERT INTO wallets (
@@ -19,7 +17,7 @@ const distributeParentChainCommission = async (
 ) => {
   const activePlan = (
     await client.query(
-      `SELECT id, max_generation_level, holding_period_minutes, direct_partner_commission_percent
+      `SELECT id, max_generation_level, direct_partner_commission_percent
        FROM mlm_plan_settings
        WHERE is_active = TRUE AND effective_from <= CURRENT_TIMESTAMP
          AND (effective_to IS NULL OR effective_to > CURRENT_TIMESTAMP)
@@ -42,8 +40,6 @@ const distributeParentChainCommission = async (
   if (alreadyLinked.rows.length > 0) return { inserted: 0 };
 
   const maxGen = Number(activePlan.max_generation_level || 7);
-  const holdingMin = Number(activePlan.holding_period_minutes ?? HOLDING_MIN_FALLBACK);
-  const isPending = holdingMin > 0;
 
   const uplineRes = await client.query(
     `WITH RECURSIVE upline AS (
@@ -118,7 +114,7 @@ const distributeParentChainCommission = async (
         rate,
         commissionAmount,
         activePlan.id,
-        isPending ? "pending" : "completed",
+        "pending",
         mlmOrderType,
         "unilevel",
       ],
@@ -139,7 +135,7 @@ const distributeParentChainCommission = async (
         generation === 0 ? "commission" : "commission_level",
         sourceUserId,
         orderId,
-        isPending ? "pending" : "completed",
+        "pending",
         generation === 0
           ? `Direct partner commission (${rate}%) from user ${sourceReferralCode} order`
           : `Generation Level ${generation} (${rate}%) from user ${sourceReferralCode} order`,
@@ -152,15 +148,12 @@ const distributeParentChainCommission = async (
       [txnId, mceId],
     );
 
-    const walletColumn = isPending ? "pending_amount" : "total_amount";
-    const withdrawableIncrement = isPending ? 0 : commissionAmount;
     await client.query(
       `UPDATE wallets
-       SET ${walletColumn} = COALESCE(${walletColumn}, 0) + $1,
-           withdrawable_amount = COALESCE(withdrawable_amount, 0) + $3,
+       SET pending_amount = COALESCE(pending_amount, 0) + $1,
            updated_at = CURRENT_TIMESTAMP
        WHERE user_id = $2`,
-      [commissionAmount, sponsor.beneficiary_user_id, withdrawableIncrement],
+      [commissionAmount, sponsor.beneficiary_user_id],
     );
 
     inserted++;

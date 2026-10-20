@@ -789,6 +789,7 @@ CREATE TABLE public.e_user_addresses (
     phone character varying(20),
     address_line1 text NOT NULL,
     address_line2 text,
+    district character varying(100),
     city character varying(100),
     state character varying(100),
     country character varying(100),
@@ -2079,6 +2080,7 @@ CREATE TABLE public.users (
     phone character varying(15) NOT NULL,
     whatsapp_no character varying(15),
     address text,
+    district character varying(100),
     city character varying(100),
     state character varying(100),
     pin character varying(10),
@@ -4197,4 +4199,3 @@ ALTER TABLE ONLY public.wallets
 --
 
 \unrestrict j2PTBSaQmaRFGQt8oV895agDp6cGv9ZIY3XR2KHmBcc4dgLYPLoKeb6xRIw80DC
-

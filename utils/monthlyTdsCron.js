@@ -40,12 +40,11 @@ async function getTdsPercent(client) {
 }
 
 /**
- * Assumptions based on existing code:
- * - Withdrawal uses wallets.total_amount as withdrawable.
- * - Monthly cron should adjust wallets.total_amount so that it reflects only withdrawable funds (commission - TDS).
- * - TDS is deducted as transactions with category='withdraw' and remarks containing 'TDS Deduction'.
- *
- * IMPORTANT: This module will only compile/run once commission transaction identification is aligned.
+ * Monthly settlement:
+ * - Released commission accumulates in wallets.total_amount.
+ * - For the settled month, gross commission moves out of total_amount and
+ *   (gross - TDS) is added to wallets.withdrawable_amount.
+ * - TDS is recorded as a 'withdraw' debit transaction with remarks 'TDS Deduction_<cycle>'.
  */
 async function processMonthlyTds() {
   console.log("\n Process Start .....");
@@ -137,16 +136,22 @@ async function processMonthlyTds() {
 
       console.log(`\nTDS Amount... =  ${tdsAmount} `);
 
-      if (tdsAmount > 0) {
-        // Wallet deduction (TDS)
-        const walletUpd = await client.query(
-          "UPDATE wallets SET total_amount = total_amount - $1, withdrawable_amount = GREATEST(0, COALESCE(withdrawable_amount, 0) - $1), updated_at = CURRENT_TIMESTAMP WHERE user_id = $2",
-          [tdsAmount, userId],
-        );
-        if (walletUpd.rowCount === 0) {
-          throw new Error(`Wallet not found for user ${userId} during TDS deduction`);
-        }
+      const netAmount = Number((commissionTotal - tdsAmount).toFixed(2));
 
+      // Month's commission leaves total_amount and becomes withdrawable after TDS.
+      const walletUpd = await client.query(
+        `UPDATE wallets
+         SET total_amount = GREATEST(0, COALESCE(total_amount, 0) - $1),
+             withdrawable_amount = COALESCE(withdrawable_amount, 0) + $2,
+             updated_at = CURRENT_TIMESTAMP
+         WHERE user_id = $3`,
+        [commissionTotal, netAmount, userId],
+      );
+      if (walletUpd.rowCount === 0) {
+        throw new Error(`Wallet not found for user ${userId} during monthly settlement`);
+      }
+
+      if (tdsAmount > 0) {
         console.log(`\nWallet Updated... transaction inserting `);
         // Audit transaction: TDS Deduction
         const tdsTxnRes = await client.query(
@@ -162,11 +167,6 @@ async function processMonthlyTds() {
         // If you already have an invoice table, we can insert rows here.
         void tdsTxnRes;
       }
-
-      // Optional: ensure withdrawable matches commissionTotal - tdsAmount.
-      // Currently we only deduct TDS from total_amount.
-      // If you require wallet total_amount to be set exactly, we need your wallet-credit flow.
-      // For now, we only apply the TDS portion.
 
       console.log(
         `[monthlyTdsCron] user=${userId} commission=${commissionTotal} tds=${tdsAmount}`,

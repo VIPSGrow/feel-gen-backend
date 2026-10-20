@@ -74,6 +74,28 @@ exports.listCoupons = async (req, res) => {
   }
 };
 
+// Public: coupons to show on website
+exports.listPublicCoupons = async (req, res) => {
+  try {
+    const result = await db.query(`
+      SELECT id, code, discount_type, discount_amount, min_order_amount,
+             max_discount_amount, expires_at, display_title, display_description, display_order
+      FROM coupons
+      WHERE show_on_website = true
+        AND status = 'active'
+        AND (valid_from IS NULL OR valid_from <= NOW())
+        AND (expires_at IS NULL OR expires_at + INTERVAL '1 day' > NOW())
+        AND used_count < usage_limit
+        AND (applicable_users IS NULL OR cardinality(applicable_users) = 0)
+      ORDER BY display_order ASC, id DESC
+    `);
+    res.status(200).json({ success: true, data: result.rows });
+  } catch (error) {
+    console.error("Error fetching public coupons:", error);
+    res.status(500).json({ success: false, message: "Internal server error" });
+  }
+};
+
 // Admin: Create coupon
 exports.createCoupon = async (req, res) => {
   try {
@@ -89,6 +111,10 @@ exports.createCoupon = async (req, res) => {
       applicable_products,
       applicable_users,
       status,
+      show_on_website,
+      display_title,
+      display_description,
+      display_order,
     } = req.body;
 
     if (!code?.trim()) {
@@ -107,8 +133,9 @@ exports.createCoupon = async (req, res) => {
       `
       INSERT INTO coupons (
         code, discount_type, discount_amount, min_order_amount, max_discount_amount,
-        usage_limit, valid_from, expires_at, applicable_products, applicable_users, status
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) RETURNING *
+        usage_limit, valid_from, expires_at, applicable_products,         applicable_users, status,
+                show_on_website, display_title, display_description, display_order
+              ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15) RETURNING *
     `,
       [
         code.trim().toUpperCase(),
@@ -122,6 +149,10 @@ exports.createCoupon = async (req, res) => {
         products.length ? products : null,
         users.length ? users : null,
         status || "active",
+        show_on_website === true || show_on_website === "true",
+        display_title?.trim() || null,
+        display_description?.trim() || null,
+        parseInt(display_order) || 0,
       ],
     );
 
@@ -197,6 +228,12 @@ exports.updateCoupon = async (req, res) => {
           val = parseFloat(val) || 0;
         } else if (key === "usage_limit") {
           val = parseInt(val) || 1;
+        } else if (key === "show_on_website") {
+          val = val === true || val === "true";
+        } else if (key === "display_order") {
+          val = parseInt(val) || 0;
+        } else if (key === "display_title" || key === "display_description") {
+          val = val?.toString().trim() || null;
         }
         values.push(val);
         return `${key} = $${values.length}`;
@@ -303,7 +340,10 @@ exports.validateCoupon = async (req, res) => {
         .status(400)
         .json({ success: false, message: "Coupon not yet valid" });
     }
-    if (coupon.expires_at && new Date(coupon.expires_at) < now) {
+    if (
+      coupon.expires_at &&
+      new Date(coupon.expires_at).getTime() + 24 * 60 * 60 * 1000 <= now.getTime()
+    ) {
       await client.query("ROLLBACK");
       return res
         .status(400)

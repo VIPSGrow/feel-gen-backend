@@ -505,6 +505,7 @@ exports.updateMyProfile = async (req, res) => {
       "dob",
       "gender",
       "address",
+      "district",
       "city",
       "state",
       "pin",
@@ -594,7 +595,7 @@ exports.updateMyProfile = async (req, res) => {
       UPDATE users
       SET ${updates.join(", ")}
       WHERE id = $${idx}
-      RETURNING id, full_name, email, phone, whatsapp_no, address, city, state, pin, bank_name, account_holder_name, account_no, ifsc_code, branch, aadhaar_no, pan_no, dob, gender
+      RETURNING id, full_name, email, phone, whatsapp_no, address, district, city, state, pin, bank_name, account_holder_name, account_no, ifsc_code, branch, aadhaar_no, pan_no, dob, gender
     `;
 
     const result = await db.query(query, values);
@@ -811,6 +812,7 @@ exports.createUser = async (req, res) => {
       whatsappNo: whatsapp_no,
       phone,
       address,
+      district,
       city,
       state,
       pin,
@@ -930,7 +932,7 @@ exports.createUser = async (req, res) => {
     const newUser = await client.query(
       `INSERT INTO users (
         full_name, aadhaar_no, dob, gender, pan_no, email, phone, whatsapp_no,
-        address, city, state, pin,
+        address, district, city, state, pin,
         bank_name, account_holder_name, account_no, ifsc_code, branch,
         referral_code, referrer_name, referrer_contact,
         nominee_name, nominee_relationship, nominee_age, nominee_contact, nominee_aadhaar,
@@ -938,13 +940,13 @@ exports.createUser = async (req, res) => {
         username, password_hash, referrer_id,
         node_path, is_active, gstin, profile_pic, initiator_user_id
        ) VALUES (
-      $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,
-      $13,$14,$15,$16,$17,
-      $18,$19,$20,
-      $21,$22,$23,$24,$25,
-      $26,$27,$28,
-      $29,$30,$31,
-      $32,$33,$34,$35,$36
+      $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,
+      $14,$15,$16,$17,$18,
+      $19,$20,$21,
+      $22,$23,$24,$25,$26,
+      $27,$28,$29,
+      $30,$31,$32,
+      $33,$34,$35,$36,$37
       ) RETURNING *`,
       [
         full_name || null,
@@ -956,6 +958,7 @@ exports.createUser = async (req, res) => {
         phone || null,
         whatsapp_no || null,
         address || null,
+        district || null,
         city || null,
         state || null,
         pin || null,

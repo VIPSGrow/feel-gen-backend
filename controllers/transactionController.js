@@ -233,9 +233,9 @@ exports.transferToUser = async (req, res) => {
       await client.query(
         `
           INSERT INTO wallets (user_id, total_amount, pending_amount, left_count, right_count, paid_pairs, company_fund, withdrawable_amount)
-          VALUES ($1, $2, 0, 0, 0, 0, 0, 0)
+          VALUES ($1, 0, 0, 0, 0, 0, 0, $2)
           ON CONFLICT (user_id) DO UPDATE SET
-            total_amount = wallets.total_amount + EXCLUDED.total_amount,
+            withdrawable_amount = COALESCE(wallets.withdrawable_amount, 0) + EXCLUDED.withdrawable_amount,
             updated_at = CURRENT_TIMESTAMP
         `,
         [toUserId, amountNum],

@@ -20,6 +20,14 @@ exports.getBalance = async (req, res) => {
         AND t.status = 'completed'
         AND t.remarks ILIKE '%TDS Deduction%'
     ), 0) as total_tds_deducted,
+    COALESCE((
+      SELECT SUM(t.amount)
+      FROM transactions t
+      WHERE t.user_id = $1
+        AND t.type = 'credit'
+        AND t.status = 'completed'
+        AND t.category IN ('commission', 'commission_self', 'commission_level', 'rank_reward')
+    ), 0) as lifetime_commission,
     (SELECT COUNT(*) FROM transactions WHERE user_id = $1) as total_transactions
 FROM wallets w
 WHERE w.user_id = $1;`;
@@ -32,6 +40,8 @@ WHERE w.user_id = $1;`;
         total_balance: 0,
         pending_balance: 0,
         available_balance: 0,
+        withdrawable_amount: 0,
+        lifetime_commission: 0,
         total_tds_deducted: 0,
         total_transactions: 0,
       },

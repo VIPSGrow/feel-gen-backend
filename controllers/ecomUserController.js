@@ -171,6 +171,7 @@ exports.addAddress = async (req, res) => {
       phone,
       address_line1,
       address_line2,
+      district,
       city,
       state,
       country,
@@ -192,14 +193,15 @@ exports.addAddress = async (req, res) => {
     const result = await db.query(
       `INSERT INTO e_user_addresses (${
         type && type == "distributor" ? "distributor_id" : "user_id"
-      }, full_name, phone, address_line1, address_line2, city, state, country, pincode, landmark, is_default)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) RETURNING *`,
+      }, full_name, phone, address_line1, address_line2, district, city, state, country, pincode, landmark, is_default)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) RETURNING *`,
       [
         userId,
         full_name,
         phone,
         address_line1,
         address_line2,
+        district,
         city,
         state,
         country,

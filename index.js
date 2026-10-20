@@ -106,6 +106,7 @@ app.post("/api/upload", async (req, res) => {
 require("./utils/releaseHoldCron");
 require("./utils/monthlyTdsCron");
 require("./utils/qualificationCycleCron");
+require("./utils/repurchaseReminderCron");
 
 // Run seed if needed (one-time)
 

@@ -6,6 +6,7 @@ const {
   getAnalytics,
   getEcomDashboardData,
   getDashboardDataV2,
+  dismissRepurchaseReminder,
 } = require("../controllers/dashboardController");
 
 const authMiddleware = require("../middleware/authMiddleware");
@@ -16,6 +17,8 @@ const ecomAuth = require("../middleware/ecomAuth");
 // @desc    Get user/distributor personal dashboard data
 // @access  Authenticated User/Distributor
 router.get("/me", authMiddleware, getUserDashboardData);
+
+router.post("/repurchase-reminder/dismiss", authMiddleware, dismissRepurchaseReminder);
 
 // @route   GET api/dashboard
 // @desc    Get admin dashboard overview data

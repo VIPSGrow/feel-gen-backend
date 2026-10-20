@@ -239,7 +239,7 @@ async function getOrCreateInvoicePdf({ order, force = false }) {
     true,
     rgb(0.42, 0.16, 0.54),
   );
-  drawText("Original For Recipient", 475, 782, 7.5, true);
+  drawText("Original For Recipient", 475, 782, 7.5, true, rgb(50/255,205/255,50/255));
 
   drawText(
     "OFFICE ADDRESS: Pole No.17, Kharkhari Nahar, Near MCD School,",
@@ -265,7 +265,7 @@ async function getOrCreateInvoicePdf({ order, force = false }) {
   );
 
   drawText("CIN- U13996DL2026PTC465812", 440, 733, 8, true);
-  drawText("TAX INVOICE", 255, 725, 12, true, rgb(0.42, 0.16, 0.54));
+  drawText("BILL OF SUPPLY", 255, 725, 12, true, rgb(0.42, 0.16, 0.54));
   drawText("GSTIN:- 07AAHCF0020FIZA", 440, 721, 8, true);
 
   // --- METADATA SECTION ---
@@ -288,13 +288,16 @@ async function getOrCreateInvoicePdf({ order, force = false }) {
   drawLine(310, metaY - 15, 565, metaY - 15, 0.5);
   drawText(orderDate, 410, metaY - 11, 8);
 
-  drawText("Invoice No:", 315, metaY - 33, 8, true);
+  drawText("Invoice No:", 315, metaY - 26, 8, true);
   drawText(
     order.invoice_no || order.order_id || orderIdStr,
     410,
-    metaY - 33,
+    metaY - 26,
     8,
   );
+  drawLine(310, metaY - 30, 565, metaY - 30, 0.5);
+  drawText("State Name Code:", 315, metaY - 41, 8, true);
+  drawText(order.state_name_code || "N/A", 410, metaY - 41, 8);
 
   metaY -= 45;
   drawLine(30, metaY, 565, metaY, 0.5);
@@ -524,24 +527,7 @@ async function getOrCreateInvoicePdf({ order, force = false }) {
   drawText("Branch: NAJAFGARH", 35, bankY - 39, 9, true);
   drawText("Account Type: Current Account", 35, bankY - 52, 9, true);
 
-  // FIXED: Explicitly passing `true` for the last parameter to trigger Noto Sans Devanagari encoding mapping
-  // drawText(
-  //   "हमारा प्रयास आत्मनिर्भर सुरक्षा",
-  //   110,
-  //   bankY - 75,
-  //   12,
-  //   false,
-  //   rgb(0.42, 0.16, 0.54),
-  //   true,
-  // );
-
-  // QR Placeholders
-  // drawRect(340, bankY - 60, 75, 70, 0.5);
-  // drawText("Payment QR Code", 343, bankY - 70, 7, true, rgb(0, 0, 1));
-
-  // drawRect(450, bankY - 60, 75, 70, 0.5);
-  // drawText("Website QR", 468, bankY - 70, 7, true, rgb(0, 0, 1));
-
+  
   // Dynamically Draw Payment QR Image or fall back to an outline placeholder
   if (embeddedPaymentQR) {
     page.drawImage(embeddedPaymentQR, {
@@ -602,7 +588,7 @@ async function getOrCreateInvoicePdf({ order, force = false }) {
   ];
 
   let discY = tableY - 12;
-  drawText("Terms Condition", 35, discY, 9, true);
+  drawText("Declaration", 35, discY, 9, true);
   discY = discY - 10;
   disclaimers.forEach((line) => {
     if (line.length > 130) {

@@ -1,5 +1,18 @@
 const db = require("../config/db");
 const { getStatus: getQualificationStatus } = require("../services/qualification/QualificationService");
+const { getActiveReminder, dismissReminder } = require("../services/repurchaseService");
+
+// @desc    Snooze repurchase reminder popup for 24h
+// @route   POST /api/dashboard/repurchase-reminder/dismiss
+exports.dismissRepurchaseReminder = async (req, res) => {
+  try {
+    await dismissReminder(req.user.id);
+    res.json({ success: true });
+  } catch (error) {
+    console.error("Dismiss repurchase reminder error:", error);
+    res.status(500).json({ success: false, message: "Server error" });
+  }
+};
 
 // Helper to safely run a query and return default on error
 const safeQuery = async (query, params = [], defaultValue = null) => {
@@ -204,11 +217,19 @@ exports.getUserDashboardData = async (req, res) => {
       console.error("Dashboard qualification error:", e.message);
     }
 
+    let repurchaseReminder = null;
+    try {
+      repurchaseReminder = await getActiveReminder(userId);
+    } catch (e) {
+      console.error("Dashboard repurchase reminder error:", e.message);
+    }
+
     // ─── COMBINE ALL DATA ───
     return res.json({
       success: true,
       data: {
         qualification,
+        repurchase_reminder: repurchaseReminder,
         profile: userProfile.data?.[0] || {},
         wallet: walletBalance.data?.[0] || {},
         orders: orderStats.data?.[0] || {},

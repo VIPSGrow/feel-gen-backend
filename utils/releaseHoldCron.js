@@ -62,7 +62,6 @@ async function releasePendingCommissions(client) {
       `UPDATE wallets
        SET total_amount = COALESCE(total_amount, 0) + $1,
            pending_amount = GREATEST(0, COALESCE(pending_amount, 0) - $1),
-           withdrawable_amount = COALESCE(withdrawable_amount, 0) + $1,
            updated_at = CURRENT_TIMESTAMP
        WHERE user_id = $2`,
       [event.commission_amount, event.beneficiary_user_id],

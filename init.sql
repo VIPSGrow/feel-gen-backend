@@ -14,6 +14,7 @@ CREATE TABLE IF NOT EXISTS users (
     phone VARCHAR(15) UNIQUE NOT NULL,
     whatsapp_no VARCHAR(15),
     address TEXT,
+    district VARCHAR(100),
     city VARCHAR(100),
     state VARCHAR(100),
     pin VARCHAR(10),
@@ -374,4 +375,3 @@ CREATE TABLE IF NOT EXISTS ticket_reads (
 
 CREATE INDEX IF NOT EXISTS idx_ticket_reads_ticket_id ON ticket_reads(ticket_id);
 CREATE INDEX IF NOT EXISTS idx_ticket_reads_viewer ON ticket_reads(viewer_user_id, viewer_user_type);
-
