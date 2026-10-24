@@ -38,6 +38,29 @@ function validateBlogFile(file, fieldName) {
   return null;
 }
 
+// Uses the slug from frontend if given, else derives it from the title; ensures uniqueness
+async function buildUniqueSlug(rawSlug, title, excludeId = null) {
+  const source =
+    rawSlug && typeof rawSlug === "string" && rawSlug.trim()
+      ? rawSlug
+      : title;
+  if (!source || typeof source !== "string" || !source.trim()) return null;
+
+  const base =
+    slugify(source.trim(), { lower: true, strict: true }) || `post-${Date.now()}`;
+  let candidate = base;
+  let counter = 1;
+  while (true) {
+    const { rows } = await pool.query(
+      "SELECT 1 FROM blog_posts WHERE slug = $1 AND ($2::uuid IS NULL OR id <> $2::uuid) LIMIT 1",
+      [candidate, excludeId],
+    );
+    if (rows.length === 0) return candidate;
+    counter += 1;
+    candidate = `${base}-${counter}`;
+  }
+}
+
 const blogController = {
   // ==================== CATEGORY METHODS ====================
   getAllCategories: async (req, res) => {
@@ -151,10 +174,11 @@ const blogController = {
         SELECT bp.*, bc.name as category_name 
         FROM blog_posts bp
         LEFT JOIN blog_categories bc ON bp.category_id = bc.id
-        WHERE bp.status = 'published'
+        WHERE ($1::text = 'all' OR bp.status = $1)
         ORDER BY bp.created_at DESC;
       `;
-      const { rows: posts } = await pool.query(query);
+      const status = req.query.status || "published";
+      const { rows: posts } = await pool.query(query, [status]);
 
       for (const post of posts) {
         const commentQuery = `
@@ -286,8 +310,8 @@ const blogController = {
         content,
         category_id,
         featured_image,
-        is_published,
         status,
+        slug: bodySlug,
       } = req.body;
 
       if (!title || typeof title !== "string" || !title.trim()) {
@@ -297,7 +321,7 @@ const blogController = {
         });
       }
 
-      const slug = slugify(title.trim(), { lower: true, strict: true });
+      const slug = await buildUniqueSlug(bodySlug, title);
       let imageUrl = null;
 
       // 1. Process uploaded file via Multer
@@ -339,12 +363,7 @@ const blogController = {
         imageUrl = featured_image;
       }
 
-      // Map is_published boolean/string to status column
-      const postStatus =
-        status ||
-        (is_published === true || is_published === "true"
-          ? "published"
-          : "draft");
+      const postStatus = status || "draft";
 
       const query = `
         INSERT INTO blog_posts (title, slug, content, category_id, featured_image,  status)
@@ -376,13 +395,14 @@ const blogController = {
         category_id,
         featured_image,
 
-        is_published,
         status,
+        slug: bodySlug,
       } = req.body;
 
+      // Only change slug when frontend sends one; otherwise keep existing URL (SEO-safe)
       const slug =
-        title && typeof title === "string" && title.trim()
-          ? slugify(title.trim(), { lower: true, strict: true })
+        bodySlug && typeof bodySlug === "string" && bodySlug.trim()
+          ? await buildUniqueSlug(bodySlug, null, id)
           : null;
 
       let imageUrl = null;
@@ -423,13 +443,7 @@ const blogController = {
         imageUrl = featured_image;
       }
 
-      const postStatus =
-        status ||
-        (is_published !== undefined
-          ? is_published === true || is_published === "true"
-            ? "published"
-            : "draft"
-          : null);
+      const postStatus = status || null;
 
       const query = `
         UPDATE blog_posts 
@@ -438,9 +452,9 @@ const blogController = {
             content = COALESCE($3, content), 
             category_id = COALESCE($4, category_id), 
             featured_image = COALESCE($5, featured_image),             
-            status = COALESCE($7, status), 
+            status = COALESCE($6, status), 
             updated_at = NOW()
-        WHERE id = $8 RETURNING *;
+        WHERE id = $7 RETURNING *;
       `;
       const { rows } = await pool.query(query, [
         title || null,
@@ -448,7 +462,6 @@ const blogController = {
         content || null,
         category_id || null,
         imageUrl,
-
         postStatus,
         id,
       ]);
