@@ -984,10 +984,10 @@ exports.placeDistributorOrder = async (req, res) => {
         payment_details:
           payment.method === "razorpay"
             ? {
-                razorpay_order_id: payment.razorpay_order_id,
-                razorpay_payment_id: payment.razorpay_payment_id,
-                razorpay_signature: payment.razorpay_signature,
-              }
+              razorpay_order_id: payment.razorpay_order_id,
+              razorpay_payment_id: payment.razorpay_payment_id,
+              razorpay_signature: payment.razorpay_signature,
+            }
             : null,
       });
     }
@@ -1247,6 +1247,486 @@ exports.placeDistributorOrder = async (req, res) => {
   }
 };
 
+// exports.placeOrder = async (req, res) => {
+//   const client = await db.connect();
+//   try {
+//     await client.query("BEGIN");
+
+//     const userId = req.user.id;
+//     const {
+//       items, // [{product_id, variation_id, quantity}]
+//       shipping_address,
+//       coupon_code,
+//       payment_method = "wallet",
+//       order_for = "admin",
+//       distributor_id, // Explicitly passed from frontend
+//     } = req.body;
+
+//     if (!items || !Array.isArray(items) || items.length === 0) {
+//       throw new Error("Items required");
+//     }
+
+//     // verify customer name
+//     const userRes = await client.query(
+//       "SELECT name, email FROM ecom_user WHERE id = $1",
+//       [userId],
+//     );
+//     const customerName = userRes.rows[0]?.name || "Customer";
+//     const customerEmail = userRes.rows[0]?.email;
+
+//     // 1. Target Distributor Identify karein (Fallback Logic)
+//     let targetDistributorId = distributor_id ? parseInt(distributor_id) : 0;
+
+//     let subTotal = 0;
+//     let totalTax = 0; // Dynamic Tax Accumulator
+//     let totalBV = 0;
+//     const validatedItems = [];
+
+//     // 2. Validate Items & Fetch Prices
+//     for (const item of items) {
+//       const { product_id, variation_id, quantity: qty } = item;
+
+//       let productData;
+//       let taxRate = 0;
+//       let taxInfoObj = null;
+
+//       if (variation_id) {
+//         // --- CASE 1: Variable Product ---
+//         const variantRes = await client.query(
+//           `SELECT pv.sku, pv.price, pv.bv_point, pv.stock, p.name as product_name, 
+//               p.f_image as product_image,
+//               t.tax_percentage as tax_rate,
+//               jsonb_build_object(
+//                 'id', t.id,
+//                 'name', t.tax_name,
+//                 'percentage', t.tax_percentage
+//               ) as tax_info,
+//               COALESCE((
+//                 SELECT jsonb_agg(
+//                   jsonb_build_object(
+//                     'attr_id', av.attr_id,
+//                     'attr_value_id', vam.attr_value_id, 
+//                     'value', av.value
+//                   ) ORDER BY av.attr_id
+//                 )
+//                 FROM variant_attr_mapping vam
+//                 JOIN attr_values av ON vam.attr_value_id = av.id 
+//                 WHERE vam.variant_id = pv.id
+//               ), '[]'::jsonb) as attributes
+//               FROM pro_variants pv 
+//               JOIN products p ON pv.product_id = p.id 
+//               LEFT JOIN tax_settings t ON t.id = p.tax_id 
+//               WHERE pv.id = $1 AND p.id = $2 AND p.status = 'active'`,
+//           [variation_id, product_id],
+//         );
+//         productData = variantRes.rows[0];
+//       } else {
+//         // --- CASE 2: Simple Product (No Variation) ---
+//         const productRes = await client.query(
+//           `SELECT 
+//             p.id::text as sku, 
+//             t.tax_percentage as tax_rate,
+//             CASE 
+//               WHEN p.discounted_price > 0 THEN p.discounted_price 
+//               ELSE p.base_price
+//             END as price,            
+//             null as stock, 
+//             p.name as product_name, 
+//             p.f_image as product_image, 
+//             '[]'::jsonb as attributes,
+//             jsonb_build_object(
+//               'id', t.id,
+//               'name', t.tax_name,
+//               'percentage', t.tax_percentage
+//             ) as tax_info
+//           FROM products p
+//           LEFT JOIN tax_settings t ON t.id = p.tax_id 
+//           WHERE p.id = $1 AND p.status = 'active'`,
+//           [product_id],
+//         );
+//         productData = productRes.rows[0];
+//       }
+
+//       if (!productData) {
+//         throw new Error(
+//           `Product/Variant reference matching ID ${product_id} is not active.`,
+//         );
+//       }
+
+//       taxRate = parseFloat(productData.tax_rate || 0);
+//       taxInfoObj = productData.tax_info;
+
+//       // --- INVENTORY CHECK WITH FALLBACK ---
+//       const invRes = await client.query(
+//         `SELECT distributor_id, quantity FROM distributor_inventory 
+//          WHERE product_id = $1 AND (variant_id = $2 OR (variant_id IS NULL AND $2 IS NULL))
+//          AND (distributor_id = $3 OR distributor_id = 0)
+//          ORDER BY (distributor_id = $3) DESC`,
+//         [product_id, variation_id || null, targetDistributorId],
+//       );
+
+//       let specificDistStock = invRes.rows.find(
+//         (r) => r.distributor_id == targetDistributorId,
+//       );
+//       let mainWarehouseStock = invRes.rows.find((r) => r.distributor_id == 0);
+
+//       let finalStockSource = null;
+
+//       if (specificDistStock && specificDistStock.quantity >= qty) {
+//         finalStockSource = targetDistributorId;
+//       } else if (mainWarehouseStock && mainWarehouseStock.quantity >= qty) {
+//         finalStockSource = 0;
+//       } else {
+//         throw new Error(`Insufficient stock for ${productData.product_name}.`);
+//       }
+
+//       const price = parseFloat(productData.price);
+//       const itemTax = ((price * taxRate) / 100) * qty;
+//       const itemTotal = price * qty;
+
+//       const unitBV = 1;
+//       const itemBV = unitBV * qty;
+
+//       validatedItems.push({
+//         product_id,
+//         variant_id: variation_id || null,
+//         variant_details: {
+//           price: productData.price,
+//           bv_point: productData.bv_point,
+//           tax_data: taxInfoObj, // Frontend validation matching query output sync
+//           attributes: productData.attributes || [],
+//         },
+//         qty,
+//         unit_price: price,
+//         unit_bv_points: unitBV,
+//         total_item_price: itemTotal,
+//         total_item_bv: itemBV,
+//         stock_source: finalStockSource,
+//         product_name: productData.product_name,
+//         product_image: productData.product_image,
+//         item_tax: itemTax, // Store item-wise tax for later use in order_items table
+//       });
+
+//       subTotal += itemTotal;
+//       totalTax += itemTax;
+//       totalBV += itemBV;
+//     }
+
+//     // 3. Tax & Shipping (Simple Logic)
+//     let shippingCharges = 0;
+//     if (subTotal <= 260) {
+//       shippingCharges = await getShippingCharge(client);
+//     }
+
+//     const taxAmount = Math.round(totalTax * 100) / 100;
+
+//     // Coupon base total uses the same `total_amount` concept as couponController.validateCoupon
+//     const couponBaseTotalAmount = subTotal + taxAmount + shippingCharges;
+
+//     // Apply coupon discount (if provided) - atomic inside the same transaction
+//     let discountAmount = 0;
+//     let finalTotalAmount = couponBaseTotalAmount;
+
+//     if (coupon_code) {
+//       const couponCodeNormalized = String(coupon_code).trim().toUpperCase();
+//       const couponValidationPayloadTotal = couponBaseTotalAmount;
+
+//       // Build product list for coupon validation (coupon rules are based on products array)
+//       const couponProducts = items.map((it) => it.product_id).filter(Boolean);
+
+//       // Inline the core of couponController.validateCoupon but adapt to server checkout context.
+//       const couponResult = await client.query(
+//         `
+//           SELECT * FROM coupons
+//           WHERE code = $1 AND status = 'active' AND used_count < usage_limit
+//         `,
+//         [couponCodeNormalized],
+//       );
+
+//       if (couponResult.rows.length === 0) {
+//         throw new Error("Invalid or inactive coupon");
+//       }
+
+//       const coupon = couponResult.rows[0];
+
+//       const now = new Date();
+//       if (coupon.valid_from && new Date(coupon.valid_from) > now) {
+//         throw new Error("Coupon not yet valid");
+//       }
+//       if (coupon.expires_at && new Date(coupon.expires_at) < now) {
+//         throw new Error("Coupon expired");
+//       }
+
+//       if (
+//         parseFloat(couponValidationPayloadTotal) <
+//         parseFloat(coupon.min_order_amount)
+//       ) {
+//         throw new Error(`Minimum order ${coupon.min_order_amount} required`);
+//       }
+
+//       if (coupon.applicable_products && coupon.applicable_products.length > 0) {
+//         const productIds = couponProducts.map((p) => parseInt(p));
+//         const invalid = coupon.applicable_products.some(
+//           (id) => !productIds.includes(id),
+//         );
+//         if (invalid) {
+//           throw new Error("Coupon not applicable to these products");
+//         }
+//       }
+
+//       // User restriction / anti-abuse:
+//       // couponController uses (user_id=... OR username OR phone OR ip_address).
+//       // Here we only have userId from auth; username/phone/ip are not available in this flow.
+//       // We still enforce applicable_users if present.
+//       if (coupon.applicable_users && coupon.applicable_users.length > 0) {
+//         if (!coupon.applicable_users.includes(parseInt(userId))) {
+//           throw new Error("Coupon not applicable to this user");
+//         }
+//       }
+
+//       // ecom users live in ecom_user, so coupon_usages.user_id (FK to users) can't hold their id
+//       const ecomPhone = req.user.phone ? String(req.user.phone).slice(0, 15) : null;
+//       const ecomUsername = req.user.distributor_code
+//         ? String(req.user.distributor_code).slice(0, 50)
+//         : null;
+
+//       const usageCheck = await client.query(
+//         `
+//           SELECT 1 FROM coupon_usages
+//           WHERE coupon_id = $1
+//           AND (phone = $2 OR username = $3)
+//         `,
+//         [coupon.id, ecomPhone, ecomUsername],
+//       );
+
+//       if (usageCheck.rows.length > 0) {
+//         throw new Error("Coupon already used by this user/phone/IP");
+//       }
+
+//       // Calculate discount
+//       if (coupon.discount_type === "percentage") {
+//         discountAmount =
+//           (parseFloat(coupon.discount_amount) / 100) *
+//           parseFloat(couponValidationPayloadTotal);
+//       } else {
+//         discountAmount = parseFloat(coupon.discount_amount);
+//       }
+
+//       if (coupon.max_discount_amount) {
+//         discountAmount = Math.min(
+//           discountAmount,
+//           parseFloat(coupon.max_discount_amount),
+//         );
+//       }
+
+//       discountAmount = parseFloat(discountAmount.toFixed(2));
+//       finalTotalAmount = couponBaseTotalAmount - discountAmount;
+//       if (finalTotalAmount < 0) finalTotalAmount = 0;
+
+//       // Apply coupon usage: increment used_count + record usage
+//       await client.query(
+//         `UPDATE coupons SET used_count = used_count + 1 WHERE id = $1`,
+//         [coupon.id],
+//       );
+
+//       await client.query(
+//         `
+//           INSERT INTO coupon_usages
+//             (coupon_id, user_id, username, phone, ip_address, user_agent)
+//           VALUES ($1, $2, $3, $4, $5, $6)
+//         `,
+//         [coupon.id, null, ecomUsername, ecomPhone, null, null],
+//       );
+//     }
+
+//     const totalAmount = finalTotalAmount;
+
+//     // 4. Create Order
+
+//     const orderRef = generateOrderId();
+//     const orderInsert = await client.query(
+//       `INSERT INTO orders (order_id, user_id, distributor_id, sub_total, 
+//       tax_amount, shipping_charges, total_amount, total_bv_points, shipping_address, payment_method, order_status, order_for)
+//        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'pending', $11) RETURNING *`,
+//       [
+//         orderRef,
+//         userId,
+//         targetDistributorId,
+//         subTotal,
+//         taxAmount,
+//         shippingCharges,
+//         totalAmount,
+//         totalBV,
+//         shipping_address,
+//         payment_method,
+//         order_for,
+//       ],
+//     );
+//     const newOrderResult = orderInsert.rows[0];
+//     const dbOrderId = newOrderResult.id;
+
+
+//     // ==========================================
+//     // Coupon Usage Record (Post-Order)
+//     // ==========================================
+//     if (coupon_code) {
+//       // 1. Increment usage count
+//       await client.query(
+//         `UPDATE coupons SET used_count = used_count + 1 WHERE id = $1`,
+//         [coupon.id],
+//       );
+
+//       // 2. Customer metadata
+//       const customerPhone = shipping_address?.phone || req.user.phone || null;
+//       const username = shipping_address?.full_name || customerName || null;
+//       const clientIp = req.headers["x-forwarded-for"] || req.socket.remoteAddress || null;
+//       const userAgent = req.headers["user-agent"] || null;
+
+//       // 3. String formatted userId insert karein
+//       await client.query(
+//         `
+//           INSERT INTO coupon_usages
+//             (coupon_id, user_id, username, phone, ip_address, user_agent, order_id)
+//           VALUES ($1, $2, $3, $4, $5, $6, $7)
+//         `,
+//         [
+//           coupon.id,
+//           String(userId), // Handles both Int (e.g. "392") and UUID (e.g. "uuid-string")
+//           username,
+//           customerPhone,
+//           clientIp,
+//           userAgent,
+//           dbOrderId,
+//         ],
+//       );
+//     }
+
+//     // 5. Insert Items & UPDATE INVENTORY (Deduction)
+//     for (const item of validatedItems) {
+//       // Fixed structural alignment syntax error & index array parameters matching columns count exactly (12 parameters)
+//       await client.query(
+//         `INSERT INTO order_items (
+//           order_id, product_id, variant_id, product_name, 
+//           variant_details, qty, unit_price, unit_bv_points, 
+//           total_item_price, total_item_bv, stock_source, product_image
+//          )
+//          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
+//         [
+//           dbOrderId,
+//           item.product_id,
+//           item.variant_id,
+//           item.product_name,
+//           item.variant_details,
+//           item.qty,
+//           item.unit_price,
+//           item.unit_bv_points,
+//           item.total_item_price,
+//           item.total_item_bv,
+//           item.stock_source,
+//           item.product_image,
+//         ],
+//       );
+
+//       // Inventory Deduct
+//       const deductRes = await client.query(
+//         `UPDATE distributor_inventory 
+//          SET quantity = quantity - $1, updated_at = CURRENT_TIMESTAMP
+//          WHERE product_id = $2 AND (variant_id = $3 OR (variant_id IS NULL AND $3 IS NULL))
+//          AND distributor_id = $4 RETURNING quantity`,
+//         [item.qty, item.product_id, item.variant_id, item.stock_source],
+//       );
+
+//       if (deductRes.rowCount === 0) {
+//         throw new Error(`Inventory update failed for ${item.product_name}`);
+//       }
+//     }
+
+//     // 6. Clear Cart after success
+//     await client.query(
+//       `DELETE FROM e_cart_items WHERE cart_id = (SELECT id FROM e_carts WHERE user_id = $1)`,
+//       [userId],
+//     );
+
+//     await client.query("COMMIT");
+
+//     const orderPayload = {
+//       order_id: orderRef,
+//       sakhi_distributor_id: "N/A",
+//       transaction_date: "",
+//       transaction_description: "Purchase",
+//       receipt_no: "",
+//       invoice_url: "null",
+//       customer_name: customerName,
+//       residential_address:
+//         shipping_address?.landmark +
+//         ", " +
+//         shipping_address.address_line1 +
+//         ", " +
+//         shipping_address.address_line2 +
+//         ", " +
+//         shipping_address.city +
+//         ", " +
+//         shipping_address.state +
+//         ", " +
+//         shipping_address.country +
+//         ", " +
+//         shipping_address.pincode,
+//       shipping_address:
+//         shipping_address?.landmark +
+//         ", " +
+//         shipping_address.address_line1 +
+//         ", " +
+//         shipping_address.address_line2 +
+//         ", " +
+//         shipping_address.city +
+//         ", " +
+//         shipping_address.state +
+//         ", " +
+//         shipping_address.country +
+//         ", " +
+//         shipping_address.pincode,
+//       shipping_contact_no: shipping_address.phone,
+//       email_address: customerEmail,
+//       shippingCharges: shippingCharges,
+//       items: validatedItems.map((item, index) => ({
+//         s_no: index + 1,
+//         hsn_code: "",
+//         name: item.product_name,
+//         quantity: item.qty,
+//         price: item.unit_price,
+//         taxRate: item.variant_details.tax_data.percentage,
+//         taxAmt: item.item_tax,
+//       })),
+//     };
+
+//     // Dispatch email if a valid inbox exists
+//     if (customerEmail) {
+//       // Wrapped inside a try/catch so that an unhandled SMTP transport failure won't crash your server thread
+//       try {
+//         await sendPlacedOrderEmail(customerEmail, orderPayload);
+//       } catch (mailErr) {
+//         console.error(
+//           "Mail Dispatch Error (Transaction preserved):",
+//           mailErr.message,
+//         );
+//       }
+//     }
+
+//     res.status(200).json({
+//       success: true,
+//       message: "Order placed successfully",
+//       order_id: orderRef,
+//     });
+//   } catch (error) {
+//     await client.query("ROLLBACK");
+//     console.error("Order Place Error:", error.message);
+//     res.status(400).json({ success: false, message: error.message });
+//   } finally {
+//     client.release();
+//   }
+// };
+
+
 exports.placeOrder = async (req, res) => {
   const client = await db.connect();
   try {
@@ -1259,14 +1739,14 @@ exports.placeOrder = async (req, res) => {
       coupon_code,
       payment_method = "wallet",
       order_for = "admin",
-      distributor_id, // Explicitly passed from frontend
+      distributor_id,
     } = req.body;
 
     if (!items || !Array.isArray(items) || items.length === 0) {
       throw new Error("Items required");
     }
 
-    // verify customer name
+    // Verify customer name & email
     const userRes = await client.query(
       "SELECT name, email FROM ecom_user WHERE id = $1",
       [userId],
@@ -1274,11 +1754,11 @@ exports.placeOrder = async (req, res) => {
     const customerName = userRes.rows[0]?.name || "Customer";
     const customerEmail = userRes.rows[0]?.email;
 
-    // 1. Target Distributor Identify karein (Fallback Logic)
+    // 1. Target Distributor Identify
     let targetDistributorId = distributor_id ? parseInt(distributor_id) : 0;
 
     let subTotal = 0;
-    let totalTax = 0; // Dynamic Tax Accumulator
+    let totalTax = 0;
     let totalBV = 0;
     const validatedItems = [];
 
@@ -1291,7 +1771,6 @@ exports.placeOrder = async (req, res) => {
       let taxInfoObj = null;
 
       if (variation_id) {
-        // --- CASE 1: Variable Product ---
         const variantRes = await client.query(
           `SELECT pv.sku, pv.price, pv.bv_point, pv.stock, p.name as product_name, 
               p.f_image as product_image,
@@ -1321,7 +1800,6 @@ exports.placeOrder = async (req, res) => {
         );
         productData = variantRes.rows[0];
       } else {
-        // --- CASE 2: Simple Product (No Variation) ---
         const productRes = await client.query(
           `SELECT 
             p.id::text as sku, 
@@ -1356,7 +1834,7 @@ exports.placeOrder = async (req, res) => {
       taxRate = parseFloat(productData.tax_rate || 0);
       taxInfoObj = productData.tax_info;
 
-      // --- INVENTORY CHECK WITH FALLBACK ---
+      // Inventory Check with Fallback
       const invRes = await client.query(
         `SELECT distributor_id, quantity FROM distributor_inventory 
          WHERE product_id = $1 AND (variant_id = $2 OR (variant_id IS NULL AND $2 IS NULL))
@@ -1393,7 +1871,7 @@ exports.placeOrder = async (req, res) => {
         variant_details: {
           price: productData.price,
           bv_point: productData.bv_point,
-          tax_data: taxInfoObj, // Frontend validation matching query output sync
+          tax_data: taxInfoObj,
           attributes: productData.attributes || [],
         },
         qty,
@@ -1404,7 +1882,7 @@ exports.placeOrder = async (req, res) => {
         stock_source: finalStockSource,
         product_name: productData.product_name,
         product_image: productData.product_image,
-        item_tax: itemTax, // Store item-wise tax for later use in order_items table
+        item_tax: itemTax,
       });
 
       subTotal += itemTotal;
@@ -1412,34 +1890,26 @@ exports.placeOrder = async (req, res) => {
       totalBV += itemBV;
     }
 
-    // 3. Tax & Shipping (Simple Logic)
+    // 3. Tax & Shipping
     let shippingCharges = 0;
     if (subTotal <= 260) {
       shippingCharges = await getShippingCharge(client);
     }
 
     const taxAmount = Math.round(totalTax * 100) / 100;
-
-    // Coupon base total uses the same `total_amount` concept as couponController.validateCoupon
     const couponBaseTotalAmount = subTotal + taxAmount + shippingCharges;
 
-    // Apply coupon discount (if provided) - atomic inside the same transaction
     let discountAmount = 0;
     let finalTotalAmount = couponBaseTotalAmount;
+    let validatedCoupon = null;
 
     if (coupon_code) {
       const couponCodeNormalized = String(coupon_code).trim().toUpperCase();
       const couponValidationPayloadTotal = couponBaseTotalAmount;
-
-      // Build product list for coupon validation (coupon rules are based on products array)
       const couponProducts = items.map((it) => it.product_id).filter(Boolean);
 
-      // Inline the core of couponController.validateCoupon but adapt to server checkout context.
       const couponResult = await client.query(
-        `
-          SELECT * FROM coupons
-          WHERE code = $1 AND status = 'active' AND used_count < usage_limit
-        `,
+        `SELECT * FROM coupons WHERE code = $1 AND status = 'active' AND used_count < usage_limit`,
         [couponCodeNormalized],
       );
 
@@ -1447,26 +1917,26 @@ exports.placeOrder = async (req, res) => {
         throw new Error("Invalid or inactive coupon");
       }
 
-      const coupon = couponResult.rows[0];
+      validatedCoupon = couponResult.rows[0];
 
       const now = new Date();
-      if (coupon.valid_from && new Date(coupon.valid_from) > now) {
+      if (validatedCoupon.valid_from && new Date(validatedCoupon.valid_from) > now) {
         throw new Error("Coupon not yet valid");
       }
-      if (coupon.expires_at && new Date(coupon.expires_at) < now) {
+      if (validatedCoupon.expires_at && new Date(validatedCoupon.expires_at) < now) {
         throw new Error("Coupon expired");
       }
 
       if (
         parseFloat(couponValidationPayloadTotal) <
-        parseFloat(coupon.min_order_amount)
+        parseFloat(validatedCoupon.min_order_amount)
       ) {
-        throw new Error(`Minimum order ${coupon.min_order_amount} required`);
+        throw new Error(`Minimum order ${validatedCoupon.min_order_amount} required`);
       }
 
-      if (coupon.applicable_products && coupon.applicable_products.length > 0) {
+      if (validatedCoupon.applicable_products && validatedCoupon.applicable_products.length > 0) {
         const productIds = couponProducts.map((p) => parseInt(p));
-        const invalid = coupon.applicable_products.some(
+        const invalid = validatedCoupon.applicable_products.some(
           (id) => !productIds.includes(id),
         );
         if (invalid) {
@@ -1474,74 +1944,58 @@ exports.placeOrder = async (req, res) => {
         }
       }
 
-      // User restriction / anti-abuse:
-      // couponController uses (user_id=... OR username OR phone OR ip_address).
-      // Here we only have userId from auth; username/phone/ip are not available in this flow.
-      // We still enforce applicable_users if present.
-      if (coupon.applicable_users && coupon.applicable_users.length > 0) {
-        if (!coupon.applicable_users.includes(parseInt(userId))) {
+      if (validatedCoupon.applicable_users && validatedCoupon.applicable_users.length > 0) {
+        if (!validatedCoupon.applicable_users.includes(parseInt(userId))) {
           throw new Error("Coupon not applicable to this user");
         }
       }
 
+      const ecomPhone = shipping_address?.phone || req.user.phone || null;
+
+      // Duplicate Usage Check
       const usageCheck = await client.query(
-        `
-          SELECT 1 FROM coupon_usages
-          WHERE coupon_id = $1
-          AND (user_id = $2 OR username = $3 OR phone = $4 OR ip_address = $5)
-        `,
-        [coupon.id, parseInt(userId), null, null, null],
+        `SELECT 1 FROM coupon_usages
+         WHERE coupon_id = $1
+         AND (user_id = $2 OR phone = $3)`,
+        [validatedCoupon.id, String(userId), ecomPhone],
       );
 
       if (usageCheck.rows.length > 0) {
-        throw new Error("Coupon already used by this user/phone/IP");
+        throw new Error("Coupon already used by this user/phone");
       }
 
       // Calculate discount
-      if (coupon.discount_type === "percentage") {
+      if (validatedCoupon.discount_type === "percentage") {
         discountAmount =
-          (parseFloat(coupon.discount_amount) / 100) *
+          (parseFloat(validatedCoupon.discount_amount) / 100) *
           parseFloat(couponValidationPayloadTotal);
       } else {
-        discountAmount = parseFloat(coupon.discount_amount);
+        discountAmount = parseFloat(validatedCoupon.discount_amount);
       }
 
-      if (coupon.max_discount_amount) {
+      if (validatedCoupon.max_discount_amount) {
         discountAmount = Math.min(
           discountAmount,
-          parseFloat(coupon.max_discount_amount),
+          parseFloat(validatedCoupon.max_discount_amount),
         );
       }
 
       discountAmount = parseFloat(discountAmount.toFixed(2));
       finalTotalAmount = couponBaseTotalAmount - discountAmount;
       if (finalTotalAmount < 0) finalTotalAmount = 0;
-
-      // Apply coupon usage: increment used_count + record usage
-      await client.query(
-        `UPDATE coupons SET used_count = used_count + 1 WHERE id = $1`,
-        [coupon.id],
-      );
-
-      await client.query(
-        `
-          INSERT INTO coupon_usages
-            (coupon_id, user_id, username, phone, ip_address, user_agent)
-          VALUES ($1, $2, $3, $4, $5, $6)
-        `,
-        [coupon.id, parseInt(userId), null, null, null, null],
-      );
     }
 
     const totalAmount = finalTotalAmount;
 
     // 4. Create Order
-
     const orderRef = generateOrderId();
+    // Online payments keep the cart until payment succeeds; "Buy Now" never touches the cart.
+    const isBuyNow = req.body.buy_now === true;
+    const needsOnlinePayment = payment_method === "razorpay" && totalAmount > 0;
     const orderInsert = await client.query(
       `INSERT INTO orders (order_id, user_id, distributor_id, sub_total, 
-      tax_amount, shipping_charges, total_amount, total_bv_points, shipping_address, payment_method, order_status, order_for)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'pending', $11) RETURNING *`,
+        tax_amount, shipping_charges, total_amount, total_bv_points, shipping_address, payment_method, order_status, order_for, clear_cart_on_paid)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'pending', $11, $12) RETURNING id`,
       [
         orderRef,
         userId,
@@ -1554,14 +2008,68 @@ exports.placeOrder = async (req, res) => {
         shipping_address,
         payment_method,
         order_for,
+        needsOnlinePayment && !isBuyNow,
       ],
     );
-    const newOrderResult = orderInsert.rows[0];
-    const dbOrderId = newOrderResult.id;
+    const dbOrderId = orderInsert.rows[0]?.id;
 
-    // 5. Insert Items & UPDATE INVENTORY (Deduction)
+    if (payment_method === "razorpay" && totalAmount <= 0) {
+      // Fully discounted order: nothing to collect online.
+      await client.query(
+        `UPDATE orders SET payment_status = 'paid' WHERE id = $1`,
+        [dbOrderId],
+      );
+    }
+
+    // 5. Coupon Usage Record (Sirf yahi ek jagah record hoga)
+    if (validatedCoupon) {
+      await client.query(
+        `UPDATE coupons SET used_count = used_count + 1 WHERE id = $1`,
+        [validatedCoupon.id],
+      );
+
+      // Clean IP Address for PostgreSQL 'inet' column
+      let clientIp =
+        req.headers["x-forwarded-for"]?.split(",")[0]?.trim() ||
+        req.socket.remoteAddress ||
+        null;
+
+      if (clientIp && clientIp.includes("::ffff:")) {
+        clientIp = clientIp.replace("::ffff:", "");
+      }
+      if (clientIp === "::1" || !clientIp) {
+        clientIp = "127.0.0.1";
+      }
+      console.log('Client IP:', clientIp);
+      console.log('User Agent:', userAgent);
+      console.log('Shipping Address:', shipping_address);
+
+      const customerPhone = shipping_address?.phone || req.user.phone || null;
+      const username = shipping_address?.full_name || customerName || null;
+      const userAgent = req.headers["user-agent"]
+        ? String(req.headers["user-agent"]).slice(0, 255)
+        : null;
+
+      await client.query(
+        `
+          INSERT INTO coupon_usages
+            (coupon_id, user_id, username, phone, ip_address, user_agent, order_id)
+          VALUES ($1, $2, $3, $4, $5::inet, $6, $7)
+        `,
+        [
+          validatedCoupon.id,
+          String(userId),
+          username,
+          customerPhone,
+          clientIp,
+          userAgent,
+          dbOrderId,
+        ],
+      );
+    }
+
+    // 6. Insert Items & Deduct Inventory
     for (const item of validatedItems) {
-      // Fixed structural alignment syntax error & index array parameters matching columns count exactly (12 parameters)
       await client.query(
         `INSERT INTO order_items (
           order_id, product_id, variant_id, product_name, 
@@ -1585,7 +2093,6 @@ exports.placeOrder = async (req, res) => {
         ],
       );
 
-      // Inventory Deduct
       const deductRes = await client.query(
         `UPDATE distributor_inventory 
          SET quantity = quantity - $1, updated_at = CURRENT_TIMESTAMP
@@ -1599,11 +2106,13 @@ exports.placeOrder = async (req, res) => {
       }
     }
 
-    // 6. Clear Cart after success
-    await client.query(
-      `DELETE FROM e_cart_items WHERE cart_id = (SELECT id FROM e_carts WHERE user_id = $1)`,
-      [userId],
-    );
+    // 7. Clear cart now only for non-online payments from the cart; online ones clear it on payment success
+    if (!isBuyNow && !needsOnlinePayment) {
+      await client.query(
+        `DELETE FROM e_cart_items WHERE cart_id = (SELECT id FROM e_carts WHERE user_id = $1)`,
+        [userId],
+      );
+    }
 
     await client.query("COMMIT");
 
@@ -1657,9 +2166,7 @@ exports.placeOrder = async (req, res) => {
       })),
     };
 
-    // Dispatch email if a valid inbox exists
     if (customerEmail) {
-      // Wrapped inside a try/catch so that an unhandled SMTP transport failure won't crash your server thread
       try {
         await sendPlacedOrderEmail(customerEmail, orderPayload);
       } catch (mailErr) {
@@ -1683,6 +2190,7 @@ exports.placeOrder = async (req, res) => {
     client.release();
   }
 };
+
 
 exports.getMyOrders = async (req, res) => {
   try {

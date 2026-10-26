@@ -9,6 +9,10 @@ const razorpay = new Razorpay({
 const {
   validateWebhookSignature,
 } = require("razorpay/dist/utils/razorpay-utils");
+const {
+  markOrderPaid,
+  cancelUnpaidOnlineOrder,
+} = require("../services/paymentOrderService");
 
 // Step 1: Create Order
 exports.createOrder = async (req, res) => {
@@ -35,6 +39,13 @@ exports.createOrder = async (req, res) => {
     const order = await razorpay.orders.create(options);
 
     if (order.status === "created") {
+      if (dbOrderId) {
+        await db.query(
+          `UPDATE orders SET razorpay_order_id = $1
+           WHERE order_id = $2 AND payment_status = 'unpaid'`,
+          [order.id, dbOrderId],
+        );
+      }
       res.json({ status: true, order: order }); // Sends order_id to frontend
     } else {
       res.json({ status: false, errors: order });
@@ -56,7 +67,15 @@ exports.verifyPayment = async (req, res) => {
     .digest("hex");
 
   if (razorpay_signature === expectedSign) {
-    // Payment is authentic - Update your DB here
+    try {
+      await markOrderPaid({
+        razorpayOrderId: razorpay_order_id,
+        paymentId: razorpay_payment_id,
+      });
+    } catch (err) {
+      // Signature is valid; the webhook will retry the DB update.
+      console.error("[verifyPayment] Failed to mark order paid:", err.message);
+    }
     return res.status(200).json({ success: true, message: "Payment verified" });
   } else {
     return res
@@ -77,6 +96,41 @@ exports.VerifyPaymentFunc = async (
     .digest("hex");
 
   return razorpay_signature === expectedSign;
+};
+
+// User closed the Razorpay popup / abandoned payment: release the unpaid order.
+exports.cancelPayment = async (req, res) => {
+  const orderRef = req.body?.order_id;
+  if (!orderRef) {
+    return res
+      .status(400)
+      .json({ success: false, message: "order_id is required" });
+  }
+
+  try {
+    const result = await cancelUnpaidOnlineOrder({
+      orderRef,
+      userId: req.user.id,
+      reason: "payment_cancelled_by_user",
+    });
+
+    if (result.reason === "order_not_found" || result.reason === "forbidden") {
+      return res
+        .status(404)
+        .json({ success: false, message: "Order not found" });
+    }
+
+    return res.status(200).json({
+      success: true,
+      cancelled: result.cancelled,
+      reason: result.reason || null,
+    });
+  } catch (err) {
+    console.error("[cancelPayment] Error:", err.message);
+    return res
+      .status(500)
+      .json({ success: false, message: "Could not cancel payment" });
+  }
 };
 
 // exports.razorpayWebhook = async (req, res) => {
@@ -241,23 +295,18 @@ exports.razorpayWebhook = async (req, res) => {
         console.log(`   - Your DB Order ID:     ${myCustomDbOrderId}`);
 
         // DATABASE UPDATE
-        if (myCustomDbOrderId) {
+        if (myCustomDbOrderId || orderId) {
           console.log(
             `[DB] Attempting to update order ${myCustomDbOrderId} status to 'paid'...`,
           );
-          await db.query(
-            "UPDATE orders SET payment_status = 'paid', total_bv_points = $2 WHERE order_id = $1",
-            [
-              myCustomDbOrderId,
-              `paymentId : ${paymentId} | orderId : ${orderId}`,
-            ],
-          );
-          // Idempotent; never throws, so webhook retries are safe.
-          await require("../services/qualification/QualificationService").recordPurchaseForOrderRef(
-            myCustomDbOrderId,
-          );
+          const result = await markOrderPaid({
+            orderRef: myCustomDbOrderId,
+            razorpayOrderId: orderId,
+            paymentId,
+          });
           console.log(
-            `✅ [DB SUCCESS] Order ${myCustomDbOrderId} successfully marked as paid.`,
+            `✅ [DB] Order ${myCustomDbOrderId} payment sync result:`,
+            result,
           );
         }
       }

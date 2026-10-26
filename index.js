@@ -107,6 +107,7 @@ require("./utils/releaseHoldCron");
 require("./utils/monthlyTdsCron");
 require("./utils/qualificationCycleCron");
 require("./utils/repurchaseReminderCron");
+require("./utils/pendingPaymentCron");
 
 // Run seed if needed (one-time)
 
