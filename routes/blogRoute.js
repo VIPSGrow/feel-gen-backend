@@ -2,6 +2,9 @@ const express = require("express");
 const router = express.Router();
 const multer = require("multer");
 const blogController = require("../controllers/blogController");
+const authMiddleware = require("../middleware/authMiddleware");
+const isAdminOrSuperAdmin = require("../middleware/isAdminOrSuperAdmin");
+const adminOnly = [authMiddleware, isAdminOrSuperAdmin];
 
 const storage = multer.memoryStorage();
 const upload = multer({
@@ -54,6 +57,8 @@ router.post("/", uploadSingleImage, blogController.createPost);
 router.get("/details/:slug", blogController.getPostDetails); // This now returns post + latest 6 products + comments
 router.put("/:id", uploadSingleImage, blogController.updatePost);
 router.delete("/:id", blogController.deletePost);
-router.put("/comment/approve/:commentId", blogController.approveComment); // Admin approves comments
+router.put("/comment/approve/:commentId", adminOnly, blogController.approveComment); // Admin approves comments
+router.get("/admin/comments", adminOnly, blogController.getAdminComments);
+router.delete("/comment/:commentId", adminOnly, blogController.deleteComment);
 
 module.exports = router;

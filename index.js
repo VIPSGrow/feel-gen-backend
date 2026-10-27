@@ -64,6 +64,7 @@ app.use("/api/blog", require("./routes/blogRoute"));
 app.use("/api/chatbot", require("./routes/chatbotRoutes"));
 app.use("/api/policies", require("./routes/policiesRoutes"));
 
+app.use("/api/media", require("./routes/mediaRoutes"));
 app.use("/api/support", require("./routes/supportRoutes"));
 app.use("/api/business", require("./routes/businessRoutes"));
 app.use("/api/sample-requests", require("./routes/sampleRequestRoutes"));

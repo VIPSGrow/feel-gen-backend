@@ -506,6 +506,46 @@ const blogController = {
       res.status(500).json({ success: false, message: error.message });
     }
   },
+  // Admin: list comments (?status=pending|approved|all, ?post_id=)
+  getAdminComments: async (req, res) => {
+    try {
+      const { status = "pending", post_id } = req.query;
+      const where = [];
+      const params = [];
+      if (status === "pending") where.push("c.is_approved = false");
+      else if (status === "approved") where.push("c.is_approved = true");
+      if (post_id) {
+        params.push(post_id);
+        where.push(`c.post_id = $${params.length}`);
+      }
+      const { rows } = await pool.query(
+        `SELECT c.id, c.post_id, bp.title AS post_title, bp.slug AS post_slug,
+                c.user_full_name, c.user_phone, c.user_email, c.comment_text,
+                c.is_approved, c.created_at
+         FROM blog_comments c
+         LEFT JOIN blog_posts bp ON bp.id = c.post_id
+         ${where.length ? "WHERE " + where.join(" AND ") : ""}
+         ORDER BY c.created_at DESC`,
+        params,
+      );
+      res.status(200).json({ success: true, count: rows.length, data: rows });
+    } catch (error) {
+      res.status(500).json({ success: false, message: error.message });
+    }
+  },
+
+  deleteComment: async (req, res) => {
+    try {
+      const r = await pool.query("DELETE FROM blog_comments WHERE id = $1", [
+        req.params.commentId,
+      ]);
+      if (!r.rowCount)
+        return res.status(404).json({ success: false, message: "Not found" });
+      res.status(200).json({ success: true, message: "Comment deleted." });
+    } catch (error) {
+      res.status(500).json({ success: false, message: error.message });
+    }
+  },
 };
 
 module.exports = blogController;
