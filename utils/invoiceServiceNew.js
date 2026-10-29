@@ -53,6 +53,57 @@ async function fileExists(filePath) {
   }
 }
 
+// 🔹 Product/Item Image Helper
+async function embedItemImage(pdfDoc, imageSource) {
+  if (!imageSource) return null;
+  try {
+    let bytes = null;
+
+    if (Buffer.isBuffer(imageSource)) {
+      bytes = imageSource;
+    } else if (typeof imageSource === "string") {
+      const src = imageSource.trim();
+
+      if (src.startsWith("http://") || src.startsWith("https://")) {
+        const res = await fetch(src);
+        if (res.ok) {
+          bytes = Buffer.from(await res.arrayBuffer());
+        }
+      } else if (src.startsWith("data:image")) {
+        const base64Data = src.split(",")[1];
+        bytes = Buffer.from(base64Data, "base64");
+      } else {
+        const candidatePaths = [
+          src,
+          path.join(process.cwd(), src),
+          path.join(process.cwd(), "uploads", src),
+          path.join(process.cwd(), "uploads", "products", src),
+          path.join(process.cwd(), "public", src),
+          path.join(process.cwd(), "public", "uploads", src),
+        ];
+
+        for (const p of candidatePaths) {
+          if (await fileExists(p)) {
+            bytes = await fs.readFile(p);
+            break;
+          }
+        }
+      }
+    }
+
+    if (!bytes) return null;
+
+    try {
+      return await pdfDoc.embedPng(bytes);
+    } catch {
+      return await pdfDoc.embedJpg(bytes);
+    }
+  } catch (err) {
+    console.warn("Item image load failed:", err.message);
+    return null;
+  }
+}
+
 async function getOrCreateInvoicePdf({ order, force = false }) {
   const appUrl = process.env.APP_URL || "";
   const orderIdStr = String(order.id || "");
@@ -65,9 +116,6 @@ async function getOrCreateInvoicePdf({ order, force = false }) {
           day: "2-digit",
           month: "short",
           year: "numeric",
-          hour: "2-digit",
-          minute: "2-digit",
-          second: "2-digit",
           hour12: false,
         })
         .replace(/ /g, "/")
@@ -102,49 +150,34 @@ async function getOrCreateInvoicePdf({ order, force = false }) {
   const fontHelvetica = await pdfDoc.embedFont(StandardFonts.Helvetica);
   const fontHelveticaBold = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
 
-  // Assets load
-  let embeddedWatermark = null;
+  // 🔹 Assets load
   let embeddedPaymentQR = null;
   let embeddedWebsiteQR = null;
   let embeddedStamp = null;
 
-  try {
-    const watermarkBytes = await fs.readFile(path.join(process.cwd(), "assets", "image", "image4.png"));
-    embeddedWatermark = await pdfDoc.embedPng(watermarkBytes);
-  } catch (err) {}
+  // 1. Watermark Image Source
+  const watermarkUrl = "https://feelsafeco.in/assets/images/logo.png";
+  const embeddedWaterMark = await embedItemImage(pdfDoc, watermarkUrl);
 
+  // 2. Payment QR
   try {
     const paymentQRBytes = await fs.readFile(path.join(process.cwd(), "assets", "image", "bank.png"));
     embeddedPaymentQR = await pdfDoc.embedPng(paymentQRBytes);
   } catch (err) {}
 
+  // 3. Website QR
   try {
     const websiteQRBytes = await fs.readFile(path.join(process.cwd(), "assets", "image", "website.png"));
     embeddedWebsiteQR = await pdfDoc.embedPng(websiteQRBytes);
   } catch (err) {}
 
-  // Load Stamp Image
+  // 4. Stamp
   try {
     const stampBytes = await fs.readFile(path.join(process.cwd(), "assets", "image", "stamp.png"));
     embeddedStamp = await pdfDoc.embedPng(stampBytes);
-  } catch (err) {
-    console.warn("Stamp image missing at /assets/image/stamp.png");
-  }
+  } catch (err) {}
 
   const page = pdfDoc.addPage([595.27, 841.89]);
-
-  // Background Watermark
-  if (embeddedWatermark) {
-    const wmWidth = 320;
-    const wmHeight = 320;
-    page.drawImage(embeddedWatermark, {
-      x: (page.getWidth() - wmWidth) / 2,
-      y: (page.getHeight() - wmHeight) / 2 - 30,
-      width: wmWidth,
-      height: wmHeight,
-      opacity: 0.12,
-    });
-  }
 
   const drawText = (
     text,
@@ -180,6 +213,7 @@ async function getOrCreateInvoicePdf({ order, force = false }) {
     });
   };
 
+  // ✅ FIX: color: rgb(1, 1, 1, 0) हटाया ताकि सॉलिड सफेद बैकग्राउंड न बने
   const drawRect = (x, y, width, height, thickness = 0.5, color = rgb(0, 0, 0)) => {
     page.drawRectangle({
       x,
@@ -188,7 +222,6 @@ async function getOrCreateInvoicePdf({ order, force = false }) {
       height,
       borderWidth: thickness,
       borderColor: color,
-      color: rgb(1, 1, 1, 0),
     });
   };
 
@@ -302,19 +335,17 @@ async function getOrCreateInvoicePdf({ order, force = false }) {
   curY -= 14;
   drawLine(leftX, curY, rightX, curY, 0.5);
 
-  const tCols = [leftX, 65, 205, 255, 305, 350, 400, 450, rightX];
+  const tCols = [leftX, 60, 220, 280, 350, 415, 480, rightX];
 
   drawText("S. No.", 33, curY - 11, 7, true);
-  drawText("Description of Goods", 100, curY - 11, 7, true);
-  drawText("HSN/SAC", 212, curY - 11, 7, true);
-  drawText("MRP./", 268, curY - 8, 6.5, true);
-  drawText("Marginal", 264, curY - 16, 6.5, true);
-  drawText("Quantity", 312, curY - 8, 6.5, true);
-  drawText("package", 312, curY - 16, 6.5, true);
-  drawText("Rate", 368, curY - 11, 7, true);
-  drawText("Piece/", 413, curY - 8, 6.5, true);
-  drawText("package", 410, curY - 16, 6.5, true);
-  drawText("Amount", 488, curY - 11, 7, true);
+  drawText("Description of Goods", 95, curY - 11, 7, true);
+  drawText("HSN/SAC", 230, curY - 11, 7, true);
+  drawText("MRP /", 298, curY - 8, 6.5, true);
+  drawText("Marginal", 294, curY - 16, 6.5, true);
+  drawText("Quantity", 362, curY - 8, 6.5, true);
+  drawText("package", 362, curY - 16, 6.5, true);
+  drawText("Rate", 436, curY - 11, 7, true);
+  drawText("Amount", 510, curY - 11, 7, true);
 
   const tableHeaderBottom = curY - 20;
   drawLine(leftX, tableHeaderBottom, rightX, tableHeaderBottom, 0.5);
@@ -323,56 +354,69 @@ async function getOrCreateInvoicePdf({ order, force = false }) {
   const productsList = order.products || [];
   let itemY = tableHeaderBottom;
   let totalQtyPackages = 0;
-  let totalPieces = 0;
   let grossAmount = 0;
 
-  const minRows = 7;
+  const minRows = 1;
   const rowCount = Math.max(productsList.length, minRows);
+  const rowHeight = 34;
 
   for (let idx = 0; idx < rowCount; idx++) {
     const item = productsList[idx];
-    const rowY = itemY - 13;
+    const textBaseY = itemY - 20;
 
     if (item) {
-      const qty = Number(item.quantity_packages || item.qty || 1);
-      const rate = Number(item.rate || item.unit_price || item.price || 0);
+      const qty = Number(item.qty || item.quantity_packages || 1);
+      const rate = Number(item.unit_price || item.rate || item.price || 0);
       const mrp = Number(item.mrp || rate);
-      const pieces = Number(item.pieces_per_package || item.piece_count || 10);
-      const amount = qty * rate;
+      const amount = Number(item.total_item_price || qty * rate);
 
       totalQtyPackages += qty;
-      totalPieces += qty * pieces;
       grossAmount += amount;
 
-      drawText(String(idx + 1) + ".", 45, rowY, 7.5);
-      drawText(String(item.product_name || item.name || "Product").slice(0, 30), 70, rowY, 7.5);
-      drawText(String(item.hsn_sac || item.variant_sku || "96190010"), 212, rowY, 7.5);
-      drawText(`Rs. ${mrp.toFixed(2)}`, 260, rowY, 7.5);
-      drawText(String(qty), 325, rowY, 7.5);
-      drawText(`Rs. ${rate.toFixed(2)}`, 355, rowY, 7.5);
-      drawText(String(pieces), 422, rowY, 7.5);
-      drawText(`Rs. ${amount.toFixed(2)}`, 485, rowY, 7.5);
+      drawText(String(idx + 1) + ".", 40, textBaseY, 7.5);
+
+      const itemImageSrc = item.product_image || item.image_path || item.image || item.thumbnail;
+      let textStartX = 65;
+
+      if (itemImageSrc) {
+        const embeddedItemImg = await embedItemImage(pdfDoc, itemImageSrc);
+        if (embeddedItemImg) {
+          const imgSize = 26;
+          page.drawImage(embeddedItemImg, {
+            x: 64,
+            y: itemY - rowHeight + 4,
+            width: imgSize,
+            height: imgSize,
+          });
+          textStartX = 94;
+        }
+      }
+
+      drawText(String(item.product_name || "Product").slice(0, 24), textStartX, textBaseY, 7.5);
+      drawText(String(item.variant_sku || "96190010"), 228, textBaseY, 7.5);
+      drawText(`Rs. ${mrp.toFixed(2)}`, 288, textBaseY, 7.5);
+      drawText(String(qty), 376, textBaseY, 7.5);
+      drawText(`Rs. ${rate.toFixed(2)}`, 425, textBaseY, 7.5);
+      drawText(`Rs. ${amount.toFixed(2)}`, 498, textBaseY, 7.5);
     } else {
-      drawText(String(idx + 1) + ".", 45, rowY, 7.5);
+      drawText(String(idx + 1) + ".", 40, textBaseY, 7.5);
     }
 
-    itemY -= 16;
+    itemY -= rowHeight;
+    drawLine(leftX, itemY, rightX, itemY, 0.5);
   }
 
   tCols.forEach((colX) => drawLine(colX, curY, colX, itemY, 0.5));
-  drawLine(leftX, itemY, rightX, itemY, 0.5);
 
   // --- GRAND TOTAL ROW ---
   drawText("Grand Total", 170, itemY - 11, 8, true);
-  drawText(String(totalQtyPackages), 325, itemY - 11, 8, true);
-  drawText(String(totalPieces), 422, itemY - 11, 8, true);
-  drawText(`Rs. ${grossAmount.toFixed(2)}`, 485, itemY - 11, 8, true);
+  drawText(String(totalQtyPackages), 376, itemY - 11, 8, true);
+  drawText(`Rs. ${grossAmount.toFixed(2)}`, 498, itemY - 11, 8, true);
 
   drawLine(leftX, itemY - 16, rightX, itemY - 16, 0.5);
-  drawLine(305, itemY, 305, itemY - 16, 0.5);
   drawLine(350, itemY, 350, itemY - 16, 0.5);
-  drawLine(400, itemY, 400, itemY - 16, 0.5);
-  drawLine(450, itemY, 450, itemY - 16, 0.5);
+  drawLine(415, itemY, 415, itemY - 16, 0.5);
+  drawLine(480, itemY, 480, itemY - 16, 0.5);
   itemY -= 16;
 
   // --- COUPONS ROW ---
@@ -385,18 +429,22 @@ async function getOrCreateInvoicePdf({ order, force = false }) {
     drawText(couponCode, 150, itemY - 11, 7.5, true, rgb(0, 0.5, 0.2));
     drawText(couponPercentage, 210, itemY - 11, 7.5, true, rgb(0, 0.5, 0.2));
   }
-  drawLine(450, itemY, 450, itemY - 16, 0.5);
-  drawText("-", 470, itemY - 11, 8, false, rgb(0, 0.5, 0.2));
-  drawText(couponDiscount.toFixed(2), 505, itemY - 11, 7.5, true, rgb(0, 0.5, 0.2));
+  drawLine(480, itemY, 480, itemY - 16, 0.5);
+  drawText("-", 490, itemY - 11, 8, false, rgb(0, 0.5, 0.2));
+  drawText(couponDiscount.toFixed(2), 510, itemY - 11, 7.5, true, rgb(0, 0.5, 0.2));
 
   drawLine(leftX, itemY - 16, rightX, itemY - 16, 0.5);
   itemY -= 16;
 
   // --- TAX EXEMPT ROW ---
-  const finalPayable = Number(order.final_amount || (grossAmount - couponDiscount) + Number(order.shipping_charges || 0));
+  const finalPayable = Number(
+    order.total_amount ??
+      order.final_amount ??
+      (grossAmount - couponDiscount + Number(order.shipping_charges || 0)),
+  );
   drawText("Sanitary Pad HSN/SAC 96190010 TAX RATE EXEMPT", 175, itemY - 11, 7.5, true, rgb(0.85, 0.1, 0.1));
-  drawLine(450, itemY, 450, itemY - 16, 0.5);
-  drawText(finalPayable.toFixed(2), 505, itemY - 11, 8, true);
+  drawLine(480, itemY, 480, itemY - 16, 0.5);
+  drawText(finalPayable.toFixed(2), 510, itemY - 11, 8, true);
 
   drawLine(leftX, itemY - 16, rightX, itemY - 16, 0.5);
   itemY -= 16;
@@ -404,46 +452,42 @@ async function getOrCreateInvoicePdf({ order, force = false }) {
   // --- AMOUNT IN WORDS + EO&E ---
   const wordsVal = convertAmountToWords(finalPayable);
   drawText("Amount Chargeable (in words) INR " + wordsVal, 35, itemY - 11, 7.5, true);
-  drawLine(470, itemY, 470, itemY - 16, 0.5);
-  drawText("E. & O.E", 495, itemY - 11, 7.5, true);
+  drawLine(480, itemY, 480, itemY - 16, 0.5);
+  drawText("E. & O.E", 510, itemY - 11, 7.5, true);
 
   drawLine(leftX, itemY - 16, rightX, itemY - 16, 0.5);
   itemY -= 16;
 
-  // --- BANK DETAILS & QR CODES ROW ---
-  const bankBlockH = 55;
-  const qrDivider1 = 300;
-  const qrDivider2 = 390;
-  const qrDivider3 = 470;
+  // --- BANK DETAILS & 2X QR CODES ROW ---
+  const bankBlockH = 96;
+  const qrDivider1 = 330;
+  const qrDivider2 = 445;
 
   drawLine(qrDivider1, itemY, qrDivider1, itemY - bankBlockH, 0.5);
   drawLine(qrDivider2, itemY, qrDivider2, itemY - bankBlockH, 0.5);
-  drawLine(qrDivider3, itemY, qrDivider3, itemY - bankBlockH, 0.5);
 
-  drawText("Account Holder: FEEL SAFE PRIVATE LIMITED,", 35, itemY - 12, 7.5, true);
-  drawText("Account Number: 50200120760164, IFSC: HDFC0000438,", 35, itemY - 24, 7.5, true);
-  drawText("Branch: NAJAFGARH, Account Type: Current Account,", 35, itemY - 36, 7.5, true);
+  drawText("Account Holder: FEEL SAFE PRIVATE LIMITED,", 35, itemY - 18, 7.5, true);
+  drawText("Account Number: 50200120760164, IFSC: HDFC0000438,", 35, itemY - 34, 7.5, true);
+  drawText("Branch: NAJAFGARH, Account Type: Current Account,", 35, itemY - 50, 7.5, true);
 
-  // Payment QR
   if (embeddedPaymentQR) {
     page.drawImage(embeddedPaymentQR, {
-      x: qrDivider1 + 10,
-      y: itemY - bankBlockH + 12,
-      width: 45,
-      height: 40,
+      x: qrDivider1 + 17,
+      y: itemY - bankBlockH + 14,
+      width: 80,
+      height: 78,
     });
-    drawText("Payment QR Code", qrDivider1 + 5, itemY - bankBlockH + 4, 6, true, rgb(0.1, 0.35, 0.7));
+    drawText("Payment QR Code", qrDivider1 + 22, itemY - bankBlockH + 5, 6.5, true, rgb(0.1, 0.35, 0.7));
   }
 
-  // Website QR
   if (embeddedWebsiteQR) {
     page.drawImage(embeddedWebsiteQR, {
-      x: qrDivider2 + 15,
-      y: itemY - bankBlockH + 12,
-      width: 45,
-      height: 40,
+      x: qrDivider2 + 20,
+      y: itemY - bankBlockH + 14,
+      width: 80,
+      height: 78,
     });
-    drawText("Website QR", qrDivider2 + 20, itemY - bankBlockH + 4, 6, true, rgb(0.1, 0.35, 0.7));
+    drawText("Website QR", qrDivider2 + 35, itemY - bankBlockH + 5, 6.5, true, rgb(0.1, 0.35, 0.7));
   }
 
   drawLine(leftX, itemY - bankBlockH, rightX, itemY - bankBlockH, 0.5);
@@ -495,7 +539,7 @@ async function getOrCreateInvoicePdf({ order, force = false }) {
     const stampW = 28;
     const stampH = 28;
     page.drawImage(embeddedStamp, {
-      x: 375 + (135 - stampW) / 2, // Center horizontally in the box
+      x: 375 + (135 - stampW) / 2,
       y: bottomBoxY + 13,
       width: stampW,
       height: stampH,
@@ -503,6 +547,20 @@ async function getOrCreateInvoicePdf({ order, force = false }) {
   }
 
   drawText("Authorised Signatory", 400, bottomBoxY + 4, 7, true);
+
+  // 🔹 WATERMARK LAYER (इसे सारे बॉक्सेस के बाद ड्रा किया गया है ताकि कोई रेक्टेंगल इसे छिपा न सके)
+  if (embeddedWaterMark) {
+    const wmWidth = 320;
+    const wmHeight = Math.round(wmWidth * (54 / 77)); // 224px (77x54 ratio)
+
+    page.drawImage(embeddedWaterMark, {
+      x: (page.getWidth() - wmWidth) / 2,
+      y: 350, // ठीक इनवॉइस के मध्य में
+      width: wmWidth,
+      height: wmHeight,
+      opacity: 0.16, // हल्का और साफ दिखने वाला वॉटरमार्क
+    });
+  }
 
   const finalPdfBytes = await pdfDoc.save();
   await fs.writeFile(destPdfPath, finalPdfBytes);

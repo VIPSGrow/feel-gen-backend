@@ -40,13 +40,33 @@ const calculateDiscount = (type, amount, total, maxDiscount) => {
 // Admin: List all coupons
 exports.listCoupons = async (req, res) => {
   try {
-    const { status } = req.query;
+    const status = req.query.status || "active";
+    if (!["active", "inactive", "trash", "all"].includes(status)) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid status. Use active, inactive, trash, or all.",
+      });
+    }
+
+    const page = Math.max(1, parseInt(req.query.page, 10) || 1);
+    const limit = Math.min(100, Math.max(1, parseInt(req.query.limit, 10) || 10));
+    const offset = (page - 1) * limit;
     let whereClause = "WHERE 1=1";
     const values = [];
-    if (status) {
-      whereClause += ` AND status = $${values.length + 1}`;
+
+    if (status !== "all") {
+      whereClause += ` AND c.status = $${values.length + 1}`;
       values.push(status);
     }
+
+    const countResult = await db.query(
+      `SELECT COUNT(*) FROM coupons c ${whereClause}`,
+      values,
+    );
+    const total = parseInt(countResult.rows[0].count, 10);
+    const totalPages = Math.ceil(total / limit);
+
+    const queryValues = [...values, limit, offset];
     const result = await db.query(
       `
       SELECT 
@@ -60,13 +80,16 @@ exports.listCoupons = async (req, res) => {
       FROM coupons c       
       ${whereClause}
       ORDER BY c.id DESC
+      LIMIT $${queryValues.length - 1} OFFSET $${queryValues.length}
     `,
-      values,
+      queryValues,
     );
     res.status(200).json({
       success: true,
       message: "Coupons fetched successfully",
       data: result.rows,
+      pagination: { page, limit, total, pages: totalPages },
+      totalPages,
     });
   } catch (error) {
     console.error("Error fetching coupons:", error);

@@ -25,6 +25,32 @@ async function generateInvoice(req, res) {
     const orderQuery = `
       SELECT 
         o.*, 
+        (
+          SELECT c.code
+          FROM coupon_usages cu
+          JOIN coupons c ON c.id = cu.coupon_id
+          WHERE cu.order_id = o.id
+          ORDER BY cu.used_at DESC
+          LIMIT 1
+        ) as coupon_code,
+        (
+          SELECT CASE
+            WHEN c.discount_type = 'percentage' THEN c.discount_amount
+            ELSE NULL
+          END
+          FROM coupon_usages cu
+          JOIN coupons c ON c.id = cu.coupon_id
+          WHERE cu.order_id = o.id
+          ORDER BY cu.used_at DESC
+          LIMIT 1
+        ) as coupon_percentage,
+        GREATEST(
+          0,
+          COALESCE(o.sub_total, 0) +
+          COALESCE(o.tax_amount, 0) +
+          COALESCE(o.shipping_charges, 0) -
+          COALESCE(o.total_amount, 0)
+        ) as coupon_discount,
         CASE 
           WHEN o.user_id IS NOT NULL THEN 'User'
           WHEN o.distributor_id IS NOT NULL THEN 'Distributor'
@@ -216,6 +242,32 @@ async function downloadByEmail(req, res) {
     const orderQuery = `
       SELECT 
         o.*, 
+        (
+          SELECT c.code
+          FROM coupon_usages cu
+          JOIN coupons c ON c.id = cu.coupon_id
+          WHERE cu.order_id = o.id
+          ORDER BY cu.used_at DESC
+          LIMIT 1
+        ) as coupon_code,
+        (
+          SELECT CASE
+            WHEN c.discount_type = 'percentage' THEN c.discount_amount
+            ELSE NULL
+          END
+          FROM coupon_usages cu
+          JOIN coupons c ON c.id = cu.coupon_id
+          WHERE cu.order_id = o.id
+          ORDER BY cu.used_at DESC
+          LIMIT 1
+        ) as coupon_percentage,
+        GREATEST(
+          0,
+          COALESCE(o.sub_total, 0) +
+          COALESCE(o.tax_amount, 0) +
+          COALESCE(o.shipping_charges, 0) -
+          COALESCE(o.total_amount, 0)
+        ) as coupon_discount,
         CASE 
           WHEN o.user_id IS NOT NULL THEN 'User'
           WHEN o.distributor_id IS NOT NULL THEN 'Distributor'
