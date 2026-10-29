@@ -20,7 +20,7 @@ router.post(
 
 // Auth required user routes
 router.get("/my-tickets", ecomAuth, ticketController.getUserTickets);
-router.get("/:caseId", orAuth, ticketController.getTicketDetails);
+router.get("/:caseId",  ticketController.getTicketDetails);
 router.post(
   "/:caseId/reply",
   orAuth,
